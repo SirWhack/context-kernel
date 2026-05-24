@@ -69,6 +69,7 @@ To be filled by `/grill-backlog` after v1 ships (or partway, once priorities sta
 
 - **MVP:** Not applicable — thesis accepted, build-mode. v1 release at S10.
 - **Last reviewed:** 2026-05-24
-- **Slices completed:** 0 of 13.
-- **Active specs:** [S0 — LightRAG validation spike](./docs/slices/S0.md) (queued; handed off to a separate agent); [S1 — Walking skeleton](./docs/slices/S1.md) (architecturally complete; phase-1 implementation ready to start, phase-2 gated on S0).
+- **Slices completed:** 1 of 13. S0 GO — see [spike/results.md](./spike/results.md).
+- **Active specs:** [S1 — Walking skeleton](./docs/slices/S1.md) (phase-1 implementation ready; phase-2 LightRAG-dependent modules now unblocked by S0).
+- **S0 winner:** Qwen3-30B-A3B-Instruct-2507 Q4_K_M (94 tok/s, 2 format warnings, 38.3% cross-scope density, 9.9s first-read latency). Qwen3.6-MTP is the speed option. See [docs/slices/S0.md](./docs/slices/S0.md).
 - **Code:** `/scaffold-modules` output landed (`context_kernel/` + `tests/` + `pyproject.toml`); no implementation bodies yet.

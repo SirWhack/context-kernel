@@ -73,9 +73,51 @@ The `services/chat-service ↔ shared` cluster validates ADR-0009's stated win c
 
 **Verdict: GO.** Qwen3.6-MTP passes all four S0 exit criteria with substantial margin. The thesis (cross-scope orientation via LightRAG's native merging + source-id traversal) is validated on a real source-code corpus.
 
-### Qwen3-30B-A3B-Instruct-2507 Q4_K_M — _not yet run_
+### Qwen3-30B-A3B-Instruct-2507 Q4_K_M — 2026-05-24
 
-Pending: stop the Qwen3.6-MTP llama-server, restart with the Qwen3-30B GGUF (same lean flags, no `--spec-type` / `--reasoning off`), re-run ingest + measure against `./storage_qwen3_30b/`. Comparison will show whether the simpler model produces an equally usable graph; if it does, Qwen3-30B is the safer S1 default (no MTP draft, no warning noise).
+Corpus: same trimmed LifeStrands (42 files / 10 scopes). `--cache-ram 0` on both servers.
+
+| Criterion | Measurement | Verdict |
+|---|---|---|
+| 1. LightRAG works end-to-end | 42 files → 1085 entities, 1183 relationships | ✅ |
+| 2. Ingest wall time | **2084.7 s** (~35 min, 50 s/file avg) | ✅ |
+| 3. First-read latency proxy (synthesize `services/chat-service`) | **9.9 s** | ✅ (< 60 s) |
+| 4. Cross-scope density (ADR-0009) | **453 / 1183 = 38.3 %** | ✅ (≥ 15 % = go) |
+| Format-error warnings | **2** | excellent |
+
+**Top cross-scope edge pairs:**
+
+```
+284  .  ↔  services/chat-service
+165  .  ↔  services/chat-service/services
+145  .  ↔  services/chat-service/clients
+143  services/chat-service  ↔  services/chat-service/services
+118  .  ↔  services/chat-service/managers
+108  .  ↔  services/chat-service/api
+104  services/chat-service/clients  ↔  services/chat-service/services
+103  services/chat-service/api  ↔  services/chat-service/managers
+ 99  services/chat-service  ↔  services/chat-service/clients
+ 95  services/chat-service  ↔  services/chat-service/managers
+```
+
+## Head-to-head
+
+| | Qwen3-30B (baseline) | Qwen3.6-MTP (challenger) |
+|---|---|---|
+| Ingest wall time | 2085 s (35 min) | 1519 s (25 min, **1.37× faster**) |
+| Graph size | 1085 ent / 1183 rel | 1145 ent / 1195 rel |
+| Cross-scope density | 38.3 % → GO | 43.5 % → GO |
+| First-read latency | **9.9 s** | 12.7 s |
+| Format warnings | **2** | 311 |
+| Synthesis quality | Excellent | Excellent |
+
+**Recommendation: Qwen3-30B-A3B-Instruct-2507 Q4_K_M as S1 default.**
+
+- 150× fewer format errors → more trustworthy graph without post-validation
+- Simpler serving (no `--reasoning off`, no `--spec-type draft-mtp`, no MTP heads to source)
+- Comparable graph quality: similar entity count, similar cross-scope density, equivalent synthesis prose
+- 37 % slower ingest is an acceptable trade for extraction reliability
+- Qwen3.6-MTP stays as the performance option when fast re-ingest matters more than cleanliness
 
 ## Notes carried forward
 
@@ -83,3 +125,4 @@ Pending: stop the Qwen3.6-MTP llama-server, restart with the Qwen3-30B GGUF (sam
 - **`llm_model_max_async=1`** in the spike matches `--parallel 1` on llama-server. Raising the server parallelism could cut wall time but risks Qwen3.6-MTP draft acceptance degradation under concurrent load (untested).
 - **The 5-fields-where-4-expected warning** suggests adding a post-extraction validation that's more lenient. Defer to S1 phase-2's `LightRAGStore` wrap.
 - **`openai_embed` from LightRAG forces `dimensions=1536`** via a decorator that fights 1024-dim Qwen3-Embedding. The spike bypasses with a direct httpx POST to `/v1/embeddings`. S1 should either use a custom embedder adapter or pin to a model that emits 1536 dims.
+- **`--cache-ram 0` is non-negotiable** for both servers. llama-server's default 8 GB prompt cache filled to ~5 GB anonymous RSS on the embedder during the 42-file Qwen3.6-MTP ingest, eating WSL2 RAM headroom. Disabled in all spike launch commands; S1 must default the same.

@@ -18,21 +18,26 @@ Two llama-server processes running locally:
 # LLM (port 8080) — one of:
 ~/src/llama.cpp/build/bin/llama-server \
   -m ~/models/qwen3-30b-a3b-instruct-2507/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf \
-  -ngl 99 --port 8080 --ctx-size 16384 --parallel 1 --no-mmap \
+  -ngl 99 --port 8080 --ctx-size 16384 --parallel 1 --no-mmap --cache-ram 0 \
   -fa on -ctk q8_0 -ctv q8_0 --jinja
 
 # or Qwen3.6-MTP:
 ~/src/llama.cpp/build/bin/llama-server \
   -m ~/models/qwen3.6-35b-a3b-mtp/Qwen3.6-35B-A3B-UD-IQ4_NL.gguf \
-  -ngl 99 --port 8080 --ctx-size 16384 --parallel 1 --no-mmap \
+  -ngl 99 --port 8080 --ctx-size 16384 --parallel 1 --no-mmap --cache-ram 0 \
   -fa on -ctk q8_0 -ctv q8_0 --jinja --reasoning off \
   --spec-type draft-mtp --spec-draft-n-max 3
 
 # Embedder (port 8081):
 ~/src/llama.cpp/build/bin/llama-server \
   -m ~/models/qwen3-embedding-0.6b/Qwen3-Embedding-0.6B-Q8_0.gguf \
-  --embeddings -ngl 99 --port 8081 --pooling last --no-mmap
+  --embeddings -ngl 99 --port 8081 --pooling last --no-mmap --cache-ram 0
 ```
+
+**`--cache-ram 0` is non-negotiable.** llama-server defaults to an 8 GB prompt cache.
+For an embedder it's useless (no shared prefixes) and during an ingest of 1000+
+LLM extraction calls it accumulates several GB of anonymous RSS. Disabling it
+keeps process RAM stable at ~1-2 GB across long ingests.
 
 ## Usage
 
