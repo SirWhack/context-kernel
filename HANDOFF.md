@@ -43,7 +43,8 @@ Separate `llama-server` (or LM Studio second slot) on a different port. Co-resid
 1. Single-file Python script (not yet the `ck` AgentCLI shape) that runs LightRAG ingest + a representative query end-to-end against ~50 markdown files.
 2. Per candidate model: ingest wall-time, tok/s during ingest, peak VRAM, extracted entity count, spot-check of 3-5 chunks for extraction correctness.
 3. **First-read latency proxy:** wall-time to materialize one scope's worth of summary content from the graph. This is the number `ADR-0003` lives or dies on. Threshold: **< 60s** per `ARCHITECTURE.md` §7.
-4. Go/no-go on: (i) does LightRAG work, (ii) which model wins, (iii) is first-read latency under 60s.
+4. **Cross-scope relationship density** (per [ADR-0009](docs/adr/0009-cross-scope-relationships-via-source-id.md)): count of relationships whose endpoints span ≥2 scopes (source-files in different directories), expressed as a fraction of total relationships in the graph. **This is the number THEORY.md open question 4 lives or dies on — and with it, the thesis.** Heuristic thresholds: **≥15%** = go; **<5%** = stop and re-grill `ADR-0004` (LightRAG); **5-15%** = limp forward with caveat and watch closely.
+5. Go/no-go on: (i) does LightRAG work, (ii) which model wins, (iii) is first-read latency under 60s, (iv) is cross-scope density ≥15%.
 
 ### (e) Spike location
 
