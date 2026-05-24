@@ -21,8 +21,8 @@ The system being built — a knowledge graph plus materialized markdown tree plu
 _Avoid_: (to be sharpened via /grill-with-docs)
 
 **ck**:
-The operator CLI (`ck ingest`, `ck materialize`, `ck check`, `ck mcp`); the only writer to `.context-kernel/`, never invoked by the agent.
-_Avoid_: (to be sharpened via /grill-with-docs)
+The operator CLI (`ck ingest`, `ck materialize`, `ck check`, `ck mcp`); the only writer to `.context-kernel/`. Invoked by the coding agent on the operator's behalf (per [ADR-0005](./docs/adr/0005-agent-as-operator.md)) — today via Bash, in future via MCP write tools.
+_Avoid_: "ck is human-only" (superseded — see ADR-0005).
 
 ### Composition model
 
