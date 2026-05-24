@@ -26,7 +26,7 @@ Decisions that already happened, recorded inline so they aren't relitigated.
 
 2. **Files-as-primary-interface** over a service API or query DSL. *Reason:* `Read`/`Grep`/`Glob` is universal across coding agents; the filesystem already gives us a namespace and the altitude axis. The MCP server is a *narrow orientation aid*, not a peer interface — every question MCP answers, a file could too.
 
-3. **Pull-based JIT regeneration via FreshnessGate** over push-based watcher. See [ADR-0003](./docs/adr/0003-pull-based-jit-regeneration.md). *Reason:* "errors out of existence" — there is no class of bug where the agent reads a stale chunk, because the gate triggers regeneration before any read returns.
+3. **Pre-commit hook regeneration** over pull-based JIT or push-based watcher. See [ADR-0010](./docs/adr/0010-pre-commit-hook-regeneration.md) (supersedes [ADR-0003](./docs/adr/0003-pull-based-jit-regeneration.md)). *Reason:* documentation is a committed artifact — the pre-commit hook ensures materialized files are always in sync with the code at every commit. No runtime gate, no daemon. Staleness bounded by commit frequency.
 
 4. **Agent-as-operator** over human-as-operator. *Reason:* in practice, the agentic engineer delegates tasks and browses materialized output; the coding agent invokes `ck` (via Bash today; via MCP write tools later, per invariant 1). Inverts the original `docs/design.md` framing that said `ck` is never invoked by the agent. *(ADR candidate — Pass 4.)*
 
@@ -75,8 +75,7 @@ flowchart TD
     Operator -.browses.-> Tree
 
     %% Freshness enforcement
-    Agent -.PreToolUse hook.-> Gate
-    MCP -.check before return.-> Gate
+    CLI -.pre-commit hook.-> Gate
     Gate -.if stale, triggers.-> Materializer
 
     style Graph fill:#fef3c7
@@ -119,14 +118,14 @@ Projects the current Graph state into the materialized tree: `AGENTS.md` at ever
 
 ### 2.4 FreshnessGate
 
-Enforces `THEORY.md` invariant 2 ("no materialized file is ever served stale") at the read boundary. Compares a materialized file's freshness header (`graph` + `source-tree` hashes) against current state; on mismatch, triggers Materializer before allowing the read to return. Two integration points: a Claude Code `PreToolUse` hook for direct file reads, and an internal check inside OrientationServer before any MCP tool response. Per [ADR-0003](./docs/adr/0003-pull-based-jit-regeneration.md), this replaces a push-based file watcher with read-time JIT enforcement — the "errors out of existence" mechanism.
+Enforces `THEORY.md` invariant 2 ("materialized files are committed in sync with their source"). The primary enforcement mechanism is a git `pre-commit` hook that runs `ck ingest && ck materialize --all` before every commit, per [ADR-0010](./docs/adr/0010-pre-commit-hook-regeneration.md) (supersedes [ADR-0003](./docs/adr/0003-pull-based-jit-regeneration.md)). The `ck check` command remains as a manual verification tool. The hook blocks the commit if regeneration fails; the developer can bypass with `git commit --no-verify`.
 
-| Upstream req | THEORY.md invariant 2 (no stale serve); ADR-0003 (pull-based JIT) |
+| Upstream req | THEORY.md invariant 2 (committed in sync); ADR-0010 (pre-commit hook) |
 |---|---|
 | **Contract** | this file §2.4 |
-| **Owns** | Freshness-comparison algorithm (parse header → compare against current `graph_commit` and source-tree hashes); regeneration trigger contract with Materializer (what scope range to regenerate on a given mismatch); integration points (Claude Code `PreToolUse` hook; internal MCP-server check) |
-| **Outputs** | Side effect: invokes Materializer when stale, then proxies the now-fresh file content to the caller. No explicit return value — the gate is invisible on the happy path |
-| **Does not own** | Reads bypassing the hook + MCP (raw `cat AGENTS.md` from a shell, scripts reading the file directly — those are out-of-band and not gated; the contract is "every read *through the agent or MCP* is fresh"); content correctness (a wrong-but-fresh summary is allowed through — the gate only checks the header); regeneration latency (a stale read blocks until Materializer finishes); concurrency arbitration beyond filesystem primitives (two simultaneous stale reads of the same scope race on regeneration; expected resolution: first one wins, second waits, no corruption) |
+| **Owns** | Freshness-comparison algorithm (parse header → compare against current `graph_commit` and source-tree hashes); regeneration trigger contract with Materializer; `ck check` manual verification command; `.githooks/pre-commit` hook script |
+| **Outputs** | Pre-commit hook: runs ingest + materialize, stages changed files, blocks commit on failure. `ck check`: returns fresh content, triggering regeneration if stale |
+| **Does not own** | Uncommitted-edit freshness (staleness window bounded by commit frequency — acceptable per ADR-0010); content correctness (a wrong-but-fresh summary is allowed through — the gate only checks the header); regeneration latency (pre-commit hook adds seconds to every commit); hook installation (`ck init` sets `core.hooksPath`) |
 
 ### 2.5 OrientationServer
 
@@ -146,8 +145,8 @@ The `ck` command — entrypoint for `ingest`, `materialize`, `check`, `mcp`. The
 | Upstream req | design.md "v1 surface" section; THEORY.md invariant 1 (mutation goes graph-first) |
 |---|---|
 | **Contract** | this file §2.6 |
-| **Owns** | CLI framework choice (Click / Typer / argparse — Parnas-secret); sub-command structure (`ck ingest`, `ck materialize`, `ck check`, `ck mcp`); argument validation; error and output format; structured exit codes; (future) caller-surface for MCP write tools |
-| **Outputs** | Dispatches to Ingester, Materializer, FreshnessGate (`ck check`), and OrientationServer (`ck mcp`) based on parsed args; structured exit codes; user-facing error and progress messages |
+| **Owns** | CLI framework choice (Click / Typer / argparse — Parnas-secret); sub-command structure (`ck init`, `ck ingest`, `ck materialize`, `ck check`, `ck mcp`); argument validation; error and output format; structured exit codes; (future) caller-surface for MCP write tools |
+| **Outputs** | Dispatches to Ingester, Materializer, FreshnessGate (`ck check`), and OrientationServer (`ck mcp`) based on parsed args; `ck init` sets `core.hooksPath` for pre-commit hook; `ck materialize` prints paths of written files to stdout; structured exit codes; user-facing error and progress messages |
 | **Does not own** | Interactive prompts during long operations (commands are batch-mode; progress logged, no input mid-flight); authentication or access control (no auth model in v1; runs as the local user); cross-host coordination (single-host CLI; no distributed orchestration); atomic multi-command sequences (each `ck` call is independent — no transactions across calls); ingest performance (first run on a large portfolio is the slowest operation — caller cannot assume sub-minute completion) |
 
 ## 3. Supporting Infrastructure
@@ -237,14 +236,15 @@ No formal SRS exists. The "requirements" are `THEORY.md`'s invariants (must hold
 | Requirement | Module(s) |
 |---|---|
 | Invariant 1 — graph is source of truth; only `ck materialize` writes materialized files | Graph (data); Ingester (sole graph writer); Materializer (sole materialized-tree writer) |
-| Invariant 2 — no materialized file ever served stale | FreshnessGate (enforcement); Materializer (writes freshness header); Ingester (updates `graph_commit`) |
+| Invariant 2 — materialized files committed in sync with source | FreshnessGate (pre-commit hook enforcement); Materializer (writes freshness header); Ingester (updates `graph_commit`) |
 | Invariant 3 — MCP stateless, no runtime synthesis | OrientationServer (no state, no LLM calls, no graph traversal in request path) |
 | Invariant 4 — derived artifacts content-addressed and immutable | Ingester (writes `<sha256>` blobs); Graph (addressing scheme) |
 | Open question 1 — cross-project insight via entity merging? | EntityResolver (deferred, §6); v1 tests the no-merging hypothesis |
 | Open question 2 — scope coterminous with directory? | Materializer (current: directory-as-scope); ConfigStore (future per-directory override) |
-| Open question 3 — pull-based JIT survives first-read latency? | FreshnessGate (the trigger); Materializer (the regen work); AgentCLI (`ck check`); see §7 |
+| Open question 3 — ~~pull-based JIT latency~~ resolved | Replaced by pre-commit hook per ADR-0010 |
 | ADR-0002 — `AGENTS.md` + `@AGENTS.md` bridge | Materializer (writes both files per scope) |
-| ADR-0003 — pull-based JIT | FreshnessGate; cross-cuts Materializer + OrientationServer + AgentCLI |
+| ADR-0003 — ~~pull-based JIT~~ superseded | Superseded by ADR-0010 (pre-commit hook) |
+| ADR-0010 — pre-commit hook regeneration | FreshnessGate (`.githooks/pre-commit`); AgentCLI (`ck init`); Materializer (prints written paths) |
 
 ## Notes on this document
 

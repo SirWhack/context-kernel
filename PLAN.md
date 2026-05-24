@@ -29,7 +29,7 @@ Each slice is a `/grill-with-docs` candidate before building. The tracer bullet 
 
 1. **Walking skeleton: ingest → materialize → check → mcp** — End-to-end against one small markdown-only project (~50 files). Real Graph (LightRAG + NetworkX storage), real Ingester (markdown only), real Materializer (`AGENTS.md` + `CLAUDE.md` bridge only — no cross-cutting views), real FreshnessGate via `ck check` and MCP-internal check, real `overview`, **stubbed `find`** (canned), all four `ck` subcommands wired, minimal `ConfigStore` defaults, basic `OperationalJournal` append. **Exit criterion includes a recorded first-read latency number against a stale ~50-file scope on the 7900 XTX.** If > 60s, stop and return to `/grill-architecture` — ADR-0003 is wrong. Modules: all 8. Depends: —.
 
-2. **Wire FreshnessGate `PreToolUse` hook** — Hook script invoked by Claude Code's `PreToolUse` for `Read` calls into the materialized tree; calls into the same gate logic used by `ck check`. Modules: FreshnessGate, AgentCLI. Depth: hook integration becomes live. Depends: S1.
+2. **Wire pre-commit git hook** — Checked-in `.githooks/pre-commit` runs `ck ingest && ck materialize --all` and stages changed materialized files before every commit. `ck init` subcommand sets `core.hooksPath`. Blocks commit on failure. Supersedes pull-based JIT per [ADR-0010](./docs/adr/0010-pre-commit-hook-regeneration.md). Modules: AgentCLI, Materializer. Depends: S1.
 
 3. **Deepen Ingester: Python AST handler** — Replace markdown-only stub with real Python source parsing: module, class, function entities with scope-relative paths and signatures. Modules: Ingester. Depth: markdown → markdown + Python. Depends: S1.
 
@@ -70,6 +70,6 @@ To be filled by `/grill-backlog` after v1 ships (or partway, once priorities sta
 - **MVP:** Not applicable — thesis accepted, build-mode. v1 release at S10.
 - **Last reviewed:** 2026-05-24
 - **Slices completed:** 1 of 13. S0 GO — see [spike/results.md](./spike/results.md).
-- **Active specs:** [S1 — Walking skeleton](./docs/slices/S1.md) (phase-1 implementation ready; phase-2 LightRAG-dependent modules now unblocked by S0).
+- **Active specs:** [S1 — Walking skeleton](./docs/slices/S1.md) (phase-1 complete; phase-2 LightRAG-dependent modules unblocked by S0). [S2 — Pre-commit hook](./docs/slices/S2.md) (spec complete, ready to build).
 - **S0 winner:** Qwen3-30B-A3B-Instruct-2507 Q4_K_M (94 tok/s, 2 format warnings, 38.3% cross-scope density, 9.9s first-read latency). Qwen3.6-MTP is the speed option. See [docs/slices/S0.md](./docs/slices/S0.md).
 - **Code:** `/scaffold-modules` output landed (`context_kernel/` + `tests/` + `pyproject.toml`); no implementation bodies yet.

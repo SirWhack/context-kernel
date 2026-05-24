@@ -22,6 +22,18 @@ class JournalEntry:
     regen_chain: list[str]
 
 
+_TABLE_HEADER = "| timestamp | invocation | command | args | duration_ms | exit |\n|---|---|---|---|---|---|\n"
+
+
 def append(journal_path: Path, entry: JournalEntry) -> None:
     """Append one structured entry. Bounded volume per invariant 4."""
-    raise NotImplementedError("TODO(impl)")
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = entry.started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    args_str = " ".join(entry.args) if entry.args else ""
+    row = f"| {ts} | {entry.invocation_id} | {entry.command} | {args_str} | {entry.duration_ms} | {entry.exit_code} |\n"
+
+    if not journal_path.exists():
+        journal_path.write_text(_TABLE_HEADER + row)
+    else:
+        with open(journal_path, "a") as f:
+            f.write(row)

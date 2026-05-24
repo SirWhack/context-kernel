@@ -12,11 +12,30 @@ class SourceHandler(Protocol):
     def chunks(self, path: Path) -> list[str]: ...
 
 
+_CHUNK_SIZE = 1500
+_CHUNK_OVERLAP = 200
+
+
 class MarkdownHandler:
     """v1 source handler for markdown files."""
 
     def supports(self, path: Path) -> bool:
-        raise NotImplementedError("TODO(impl)")
+        return path.suffix.lower() in {".md", ".markdown"}
 
     def chunks(self, path: Path) -> list[str]:
-        raise NotImplementedError("TODO(impl)")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            return []
+        if len(text) <= _CHUNK_SIZE:
+            return [text]
+        result: list[str] = []
+        start = 0
+        while start < len(text):
+            end = start + _CHUNK_SIZE
+            if end < len(text):
+                nl = text.rfind("\n", start, end)
+                if nl > start:
+                    end = nl + 1
+            result.append(text[start:end])
+            start = end - _CHUNK_OVERLAP if end < len(text) else end
+        return result

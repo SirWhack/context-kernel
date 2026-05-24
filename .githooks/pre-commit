@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Regenerate documentation from current source state
+ck ingest --portfolio .
+CHANGED_FILES=$(ck materialize --all)
+
+# Stage any materialized files that changed
+if [ -n "$CHANGED_FILES" ]; then
+    echo "$CHANGED_FILES" | xargs git add
+fi

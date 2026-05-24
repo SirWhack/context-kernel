@@ -1,14 +1,16 @@
 """AGENTS.md + CLAUDE.md bridge templates per ADR-0002. See ARCHITECTURE.md §2.3."""
 
-from context_kernel.graph.protocol import KnowledgeStore
+from context_kernel.graph.protocol import KnowledgeStore, Summary
+from context_kernel.materializer.headers import FreshnessHeader, render
 from context_kernel.types import ScopePath
 
 
-def render_agents_md(scope: ScopePath, store: KnowledgeStore) -> str:
+def render_agents_md(header: FreshnessHeader, summary: Summary | None) -> str:
     """Render the canonical AGENTS.md content for this scope."""
-    raise NotImplementedError("TODO(impl)")
+    body = summary.markdown if summary else ""
+    return render(header) + "\n\n" + body + "\n"
 
 
-def render_claude_md_bridge(scope: ScopePath) -> str:
+def render_claude_md_bridge() -> str:
     """Render the thin CLAUDE.md that does `@AGENTS.md`. Per ADR-0002."""
-    raise NotImplementedError("TODO(impl)")
+    return "@AGENTS.md\n"

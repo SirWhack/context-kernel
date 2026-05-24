@@ -1,6 +1,6 @@
 # Regenerate materialized files JIT on read, not on source change
 
-**Status:** accepted
+**Status:** superseded by [ADR-0010](./0010-pre-commit-hook-regeneration.md)
 **Date:** 2026-05-23
 
 Context Kernel runs no daemon, file watcher, or background regenerator. Instead, a **freshness gate** runs before every read of a materialized file:

@@ -69,8 +69,8 @@ The operation that projects the current graph state into the markdown tree — `
 _Avoid_: (to be sharpened via /grill-with-docs)
 
 **Freshness gate**:
-The read-time check that compares a materialized file's freshness header (`graph` plus `source-tree` hashes) against current state; triggers regeneration on mismatch before allowing the read; enforces THEORY.md invariant 2.
-_Avoid_: (to be sharpened via /grill-with-docs)
+The mechanism that keeps materialized files in sync with their source. In v1, enforced by a git `pre-commit` hook that runs `ck ingest && ck materialize` before every commit — documentation is committed alongside code. `ck check` remains available for manual verification. Enforces THEORY.md invariant 2.
+_Avoid_: "read-time gate" (superseded by ADR-0010); "file watcher" (no daemon).
 
 **OrientationServer**:
 The stdio MCP surface (`ck mcp`) that exposes two read-only tools — `overview` and `find` — pointing coding agents at the right materialized files for a given question; a pure read-through over the materialized tree with no independent state or runtime synthesis (per THEORY.md invariant 3).
