@@ -68,6 +68,7 @@ To be filled by `/grill-backlog` after v1 ships (or partway, once priorities sta
 ## Status
 
 - **MVP:** Not applicable — thesis accepted, build-mode. v1 release at S10.
-- **Last reviewed:** 2026-05-23
-- **Slices completed:** 0 of 13
-- **Code:** none. No walking skeleton yet. `git init` still pending (per `HANDOFF.md`).
+- **Last reviewed:** 2026-05-24
+- **Slices completed:** 0 of 13.
+- **Active specs:** [S0 — LightRAG validation spike](./docs/slices/S0.md) (queued; handed off to a separate agent); [S1 — Walking skeleton](./docs/slices/S1.md) (architecturally complete; phase-1 implementation ready to start, phase-2 gated on S0).
+- **Code:** `/scaffold-modules` output landed (`context_kernel/` + `tests/` + `pyproject.toml`); no implementation bodies yet.

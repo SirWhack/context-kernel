@@ -40,6 +40,10 @@ _Avoid_: (to be sharpened via /grill-with-docs)
 The knowledge store at the heart of Context Kernel — entities, relationships, and per-scope summaries derived from the portfolio's source files; the single source of truth from which every materialized file is derived (per [THEORY.md](./THEORY.md) invariant 1). v1 backend: LightRAG with pluggable storage; wrapped behind a thin `KnowledgeStore` protocol.
 _Avoid_: (to be sharpened via /grill-with-docs)
 
+**Cross-scope relationship**:
+A Relationship in the Graph whose endpoint Entities have source files in different Scopes; the bridge that lets a Scope's `AGENTS.md` name its dependencies elsewhere in the portfolio. Derived from LightRAG's native cross-document entity merging plus a source-ID traversal pass at the end of ingest, per [ADR-0009](./docs/adr/0009-cross-scope-relationships-via-source-id.md). Surfacing these at sufficient density is what differentiates Context Kernel from flat vector RAG — see [THEORY.md](./THEORY.md) open question 4.
+_Avoid_: "external relationship" (too generic); "import relationship" (implies code-only).
+
 ### Materialized surface
 
 **Materialized file**:
