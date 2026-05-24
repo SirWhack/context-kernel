@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "context-kernel"
+version = "0.0.0"
+description = "Agent-forward curated-context layer over a multi-project portfolio root."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+
+[project.scripts]
+ck = "context_kernel.agent_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["context_kernel*"]
