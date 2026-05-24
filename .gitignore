@@ -1,0 +1,31 @@
+# Context Kernel runtime — opaque per-portfolio operational dir
+.context-kernel/
+
+# Scratch
+temp.md
+*.swp
+*.swo
+
+# Python (when implementation starts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Claude Code settings (project-level settings stay; user-local does not)
+.claude/settings.local.json
