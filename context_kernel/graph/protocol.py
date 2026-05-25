@@ -98,6 +98,14 @@ class KnowledgeStore(Protocol):
         """Return top-k chunks by embedding similarity. Optional scope filter. Per ADR-0012."""
         ...
 
+    def list_summaries(self) -> list[Summary]:
+        """Return all per-scope summaries. Used by cross-cutting views (S6)."""
+        ...
+
+    def list_entities_by_scope(self) -> dict[ScopePath, list[Entity]]:
+        """Return scope→entity mapping. Used by cross-cutting views (S6)."""
+        ...
+
     def upsert(
         self,
         graph_commit: GraphCommit,
@@ -105,6 +113,7 @@ class KnowledgeStore(Protocol):
         relationships: list[Relationship],
         summaries: list[Summary],
         chunks: list[EmbeddedChunk] | None = None,
+        scope_entities: dict[ScopePath, list[Entity]] | None = None,
     ) -> None:
         """Sole write path; only Ingester calls this. Ingester provides the commit identity per ADR-0008."""
         ...

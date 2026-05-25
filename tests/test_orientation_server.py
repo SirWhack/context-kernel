@@ -72,7 +72,13 @@ class _FakeStore:
         scored.sort(key=lambda r: r.score, reverse=True)
         return scored[:k]
 
-    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None):
+    def list_summaries(self):
+        return []
+
+    def list_entities_by_scope(self):
+        return {}
+
+    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None, scope_entities=None):
         if chunks:
             self.chunks = list(chunks)
 

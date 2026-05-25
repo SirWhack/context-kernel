@@ -112,7 +112,7 @@ def _cmd_ingest(args: argparse.Namespace, config) -> None:
 def _cmd_materialize(args: argparse.Namespace, config) -> None:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester.change_detection import discover_scopes
-    from context_kernel.materializer import materialize
+    from context_kernel.materializer import materialize, materialize_view
     from context_kernel.types import ScopePath
 
     portfolio = config.portfolio_root
@@ -122,6 +122,8 @@ def _cmd_materialize(args: argparse.Namespace, config) -> None:
     if args.all_scopes:
         for scope in discover_scopes(portfolio):
             all_written.extend(materialize(scope, store, portfolio, config.materializer))
+        for spec in config.materializer.views:
+            all_written.extend(materialize_view(spec, store, portfolio, config.materializer))
     elif args.scope:
         scope = ScopePath(args.scope)
         all_written.extend(materialize(scope, store, portfolio, config.materializer))

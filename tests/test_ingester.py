@@ -692,6 +692,7 @@ class _FakeStore:
         self.relationships: list[Relationship] = []
         self.summaries: list[Summary] = []
         self.chunks: list[EmbeddedChunk] = []
+        self.scope_entities: dict[ScopePath, list[Entity]] = {}
 
     def graph_commit(self) -> GraphCommit:
         return self.last_commit or GraphCommit("initial")
@@ -711,13 +712,21 @@ class _FakeStore:
     def search_similar(self, query_embedding, k, scope=None):
         return _brute_force_search(self.chunks, query_embedding, k, scope)
 
-    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None) -> None:
+    def list_summaries(self):
+        return list(self.summaries)
+
+    def list_entities_by_scope(self):
+        return dict(self.scope_entities)
+
+    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None, scope_entities=None) -> None:
         self.last_commit = graph_commit
         self.entities = list(entities)
         self.relationships = list(relationships)
         self.summaries = list(summaries)
         if chunks:
             self.chunks = list(chunks)
+        if scope_entities:
+            self.scope_entities = dict(scope_entities)
 
 
 class TestIngestPython:

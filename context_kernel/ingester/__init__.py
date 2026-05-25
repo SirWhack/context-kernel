@@ -219,5 +219,10 @@ def ingest(
                 log.warning("Failed to embed summary for scope %s, skipping", scope_key)
 
     commit = _compute_graph_commit(all_entities, all_relationships)
-    store.upsert(commit, all_entities, all_relationships, all_summaries, all_chunks or None)
+    typed_scope_entities = {ScopePath(Path(k)): v for k, v in scope_entities.items()}
+    store.upsert(
+        commit, all_entities, all_relationships, all_summaries,
+        all_chunks or None,
+        typed_scope_entities or None,
+    )
     return commit

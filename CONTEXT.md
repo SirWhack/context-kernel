@@ -51,8 +51,8 @@ A markdown file (`AGENTS.md` at a scope, or a view) projected from the graph by 
 _Avoid_: (to be sharpened via /grill-with-docs)
 
 **View** (cross-cutting view):
-A materialized file under `.context-kernel/views/` that aggregates information across multiple scopes (e.g. `by-topic/auth.md`); each view is a `(graph_query, template) → file` spec.
-_Avoid_: (to be sharpened via /grill-with-docs)
+A materialized file under `.context-kernel/views/` that aggregates information across multiple scopes. Two kinds in v1: `index` (all-scope listing with summaries and `AGENTS.md` paths) and `by-topic` (entities/summaries matching a configured tag, grouped by scope). Each view is a `(ViewSpec, graph_state) → file` projection. Configured via `[[materializer.views]]` in `.context-kernel/config.toml`.
+_Avoid_: "report" (implies one-off generation); "dashboard" (implies live state).
 
 **Pinned block**:
 A `<!-- pinned -->`-wrapped section inside a materialized file whose contents survive the next regeneration and feed into the next materialization prompt; the only place free-form human input persists.
