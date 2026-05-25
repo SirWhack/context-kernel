@@ -1,5 +1,7 @@
 """KnowledgeStore Protocol — the Parnas seam hiding the graph backend. See ARCHITECTURE.md §2.1."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -49,6 +51,29 @@ class Summary:
     markdown: str
 
 
+@dataclass(frozen=True)
+class EmbeddedChunk:
+    """Write-path type: a text chunk with its embedding, ready for vector storage."""
+
+    id: str
+    embedding: bytes
+    chunk_text: str
+    source_path: str
+    kind: str  # "entity" or "summary"
+    scope: ScopePath
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """Read-path type: a ranked result from vector similarity search."""
+
+    chunk_text: str
+    source_path: str
+    score: float
+    kind: str  # "entity" or "summary"
+    scope: ScopePath
+
+
 class KnowledgeStore(Protocol):
     """Backend-agnostic shape over the graph. Read APIs for all; write API for Ingester only."""
 
@@ -64,12 +89,22 @@ class KnowledgeStore(Protocol):
 
     def get_embedding(self, digest: Sha256) -> bytes | None: ...
 
+    def search_similar(
+        self,
+        query_embedding: bytes,
+        k: int,
+        scope: ScopePath | None = None,
+    ) -> list[SearchResult]:
+        """Return top-k chunks by embedding similarity. Optional scope filter. Per ADR-0012."""
+        ...
+
     def upsert(
         self,
         graph_commit: GraphCommit,
         entities: list[Entity],
         relationships: list[Relationship],
         summaries: list[Summary],
+        chunks: list[EmbeddedChunk] | None = None,
     ) -> None:
         """Sole write path; only Ingester calls this. Ingester provides the commit identity per ADR-0008."""
         ...

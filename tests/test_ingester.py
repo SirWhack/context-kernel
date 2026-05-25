@@ -3,6 +3,8 @@
 from pathlib import Path
 
 from context_kernel.graph.addressing import hash_bytes
+from context_kernel.graph.protocol import EmbeddedChunk, Entity, Relationship, SearchResult, Summary
+from context_kernel.ingester import ingest
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.ingester.change_detection import (
     changed_since,
@@ -10,8 +12,515 @@ from context_kernel.ingester.change_detection import (
     source_tree_hash,
     walk_source_files,
 )
-from context_kernel.ingester.handlers import MarkdownHandler
-from context_kernel.types import GraphCommit
+from context_kernel.ingester.handlers import (
+    ChunkHandler,
+    MarkdownHandler,
+    PythonHandler,
+    RawEntity,
+    RawRelationship,
+    TypeScriptHandler,
+)
+from context_kernel.config_store import IngesterConfig
+from context_kernel.types import GraphCommit, Sha256, ScopePath
+
+import math
+import struct
+
+
+# ── PythonHandler ────────────────────────────────────────────────────────
+
+
+class TestPythonHandlerSupports:
+    def test_supports_py(self, tmp_path):
+        h = PythonHandler()
+        assert h.supports(tmp_path / "main.py")
+        assert h.supports(tmp_path / "test_foo.py")
+
+    def test_rejects_non_py(self, tmp_path):
+        h = PythonHandler()
+        assert not h.supports(tmp_path / "README.md")
+        assert not h.supports(tmp_path / "style.css")
+        assert not h.supports(tmp_path / "data.json")
+
+
+class TestPythonHandlerExtract:
+    def test_empty_file(self, tmp_path):
+        f = tmp_path / "empty.py"
+        f.write_text("")
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        assert entities == []
+        assert rels == []
+
+    def test_syntax_error(self, tmp_path):
+        f = tmp_path / "bad.py"
+        f.write_text("def foo(:\n  pass")
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        assert entities == []
+        assert rels == []
+
+    def test_module_entity(self, tmp_path):
+        f = tmp_path / "example.py"
+        f.write_text('"""Example module."""\nimport os\n\nX = 1\n')
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        module_ents = [e for e in entities if e.kind == "module"]
+        assert len(module_ents) == 1
+        assert module_ents[0].name == "example"
+        assert "Example module." in module_ents[0].description
+        assert "os" in module_ents[0].description
+
+    def test_class_entity(self, tmp_path):
+        f = tmp_path / "models.py"
+        f.write_text(
+            '"""Models."""\n'
+            "class Foo:\n"
+            '    """A foo."""\n'
+            "    def bar(self, x: int) -> str:\n"
+            "        return str(x)\n"
+            "    def _internal(self) -> None:\n"
+            "        pass\n"
+        )
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        class_ents = [e for e in entities if e.kind == "class"]
+        assert len(class_ents) == 1
+        assert class_ents[0].name == "Foo"
+        desc = class_ents[0].description
+        assert "Interface:" in desc
+        assert "bar(self, x: int) -> str" in desc
+        assert "Internals:" in desc
+        assert "_internal" in desc
+
+    def test_function_entity(self, tmp_path):
+        f = tmp_path / "utils.py"
+        f.write_text(
+            "def helper(x: int, y: str) -> bool:\n"
+            "    return True\n"
+        )
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert func_ents[0].name == "helper"
+        assert "helper(x: int, y: str) -> bool" in func_ents[0].description
+        assert "public" in func_ents[0].description
+
+    def test_private_function(self, tmp_path):
+        f = tmp_path / "utils.py"
+        f.write_text("def _secret() -> None:\n    pass\n")
+        h = PythonHandler()
+        entities, rels = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert "private" in func_ents[0].description
+
+    def test_depth_metrics(self, tmp_path):
+        f = tmp_path / "deep.py"
+        f.write_text(
+            "class Deep:\n"
+            "    def a(self) -> None:\n"
+            "        pass\n"
+            "    def b(self) -> None:\n"
+            "        pass\n"
+            "    def _c(self) -> None:\n"
+            "        pass\n"
+        )
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        cls = [e for e in entities if e.kind == "class"][0]
+        assert "2 public methods" in cls.description
+        assert "1 private methods" in cls.description
+
+    def test_inheritance_relationship(self, tmp_path):
+        f = tmp_path / "child.py"
+        f.write_text(
+            "class Base:\n"
+            "    pass\n"
+            "class Child(Base):\n"
+            "    pass\n"
+        )
+        h = PythonHandler()
+        _, rels = h.extract(f)
+        inherits = [r for r in rels if r.kind == "inherits"]
+        assert len(inherits) == 1
+        assert inherits[0].source_name == "Child"
+        assert inherits[0].target_name == "Base"
+
+    def test_import_relationships(self, tmp_path):
+        f = tmp_path / "imp.py"
+        f.write_text("from pathlib import Path\nimport os\n")
+        h = PythonHandler()
+        _, rels = h.extract(f)
+        import_rels = [r for r in rels if r.kind == "imports"]
+        names = {r.target_name for r in import_rels}
+        assert "pathlib.Path" in names
+        assert "os" in names
+
+    def test_protocol_base_detection(self, tmp_path):
+        f = tmp_path / "proto.py"
+        f.write_text(
+            "from typing import Protocol\n"
+            "class Handler(Protocol):\n"
+            "    def run(self) -> None: ...\n"
+        )
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        module_ent = [e for e in entities if e.kind == "module"][0]
+        assert "Protocol" in module_ent.description
+        cls_ent = [e for e in entities if e.kind == "class"][0]
+        assert "Protocol" in cls_ent.description
+
+    def test_ast_unparse_preserves_string_annotations(self, tmp_path):
+        f = tmp_path / "fwd.py"
+        f.write_text(
+            'def process(config: "IngesterConfig") -> None:\n'
+            "    pass\n"
+        )
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        func = [e for e in entities if e.kind == "function"][0]
+        assert "'IngesterConfig'" in func.description
+
+    def test_dunder_all_determines_exports(self, tmp_path):
+        f = tmp_path / "pub.py"
+        f.write_text(
+            '__all__ = ["PublicClass"]\n'
+            "class PublicClass:\n"
+            "    pass\n"
+            "class _InternalClass:\n"
+            "    pass\n"
+            "class UnlistedClass:\n"
+            "    pass\n"
+        )
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        module_ent = [e for e in entities if e.kind == "module"][0]
+        assert "PublicClass" in module_ent.description.split("Exports:")[1].split("Private:")[0]
+        assert "UnlistedClass" not in module_ent.description.split("Exports:")[1].split("Private:")[0]
+
+    def test_async_function(self, tmp_path):
+        f = tmp_path / "async_mod.py"
+        f.write_text(
+            "async def fetch(url: str) -> bytes:\n"
+            "    return b''\n"
+        )
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        func = [e for e in entities if e.kind == "function"][0]
+        assert "fetch(url: str) -> bytes" in func.description
+
+    def test_constants_in_module_preamble(self, tmp_path):
+        f = tmp_path / "consts.py"
+        f.write_text("_PRIVATE = 42\nPUBLIC = 99\n")
+        h = PythonHandler()
+        entities, _ = h.extract(f)
+        module_ent = [e for e in entities if e.kind == "module"][0]
+        assert "_PRIVATE" in module_ent.description
+        assert "PUBLIC" in module_ent.description
+
+    def test_deterministic_entity_ids(self, tmp_path):
+        f = tmp_path / "det.py"
+        f.write_text("class Stable:\n    pass\n")
+        h = PythonHandler()
+        e1, _ = h.extract(f)
+        e2, _ = h.extract(f)
+        assert [e.name for e in e1] == [e.name for e in e2]
+        assert [e.description for e in e1] == [e.description for e in e2]
+
+
+# ── TypeScriptHandler ───────────────────────────────────────────────────
+
+
+class TestTypeScriptHandlerSupports:
+    def test_supports_ts_extensions(self, tmp_path):
+        h = TypeScriptHandler()
+        for ext in [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]:
+            assert h.supports(tmp_path / f"file{ext}"), f"should support {ext}"
+
+    def test_rejects_non_ts(self, tmp_path):
+        h = TypeScriptHandler()
+        assert not h.supports(tmp_path / "main.py")
+        assert not h.supports(tmp_path / "README.md")
+        assert not h.supports(tmp_path / "data.json")
+
+
+class TestTypeScriptHandlerExtract:
+    def test_empty_file(self, tmp_path):
+        f = tmp_path / "empty.ts"
+        f.write_text("")
+        h = TypeScriptHandler()
+        entities, rels = h.extract(f)
+        assert entities == []
+        assert rels == []
+
+    def test_module_entity(self, tmp_path):
+        f = tmp_path / "app.ts"
+        f.write_text(
+            "import { Foo } from './foo';\n"
+            "export class App {}\n"
+            "const _internal = 42;\n"
+        )
+        h = TypeScriptHandler()
+        entities, rels = h.extract(f)
+        module_ents = [e for e in entities if e.kind == "module"]
+        assert len(module_ents) == 1
+        assert module_ents[0].name == "app"
+        assert "App" in module_ents[0].description.split("Exports:")[1].split("Private:")[0]
+
+    def test_class_entity(self, tmp_path):
+        f = tmp_path / "service.ts"
+        f.write_text(
+            "export class MyService {\n"
+            "    public name: string;\n"
+            "    private _cache: Map<string, number>;\n"
+            "    \n"
+            "    constructor(name: string) {\n"
+            "        this.name = name;\n"
+            "    }\n"
+            "    \n"
+            "    run(x: number): Promise<void> {\n"
+            "        return this._doWork(x);\n"
+            "    }\n"
+            "    \n"
+            "    private _doWork(x: number): Promise<void> {\n"
+            "        return Promise.resolve();\n"
+            "    }\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, rels = h.extract(f)
+        class_ents = [e for e in entities if e.kind == "class"]
+        assert len(class_ents) == 1
+        assert class_ents[0].name == "MyService"
+        desc = class_ents[0].description
+        assert "Interface:" in desc
+        assert "Internals:" in desc
+        assert "_cache" in desc
+        assert "_doWork" in desc
+
+    def test_class_depth_metrics(self, tmp_path):
+        f = tmp_path / "deep.ts"
+        f.write_text(
+            "export class Deep {\n"
+            "    a(): void {}\n"
+            "    b(): void {}\n"
+            "    private _c(): void {}\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        cls = [e for e in entities if e.kind == "class"][0]
+        assert "2 public methods" in cls.description
+        assert "1 private methods" in cls.description
+
+    def test_interface_as_class_kind(self, tmp_path):
+        f = tmp_path / "iface.ts"
+        f.write_text(
+            "export interface IService {\n"
+            "    name: string;\n"
+            "    run(x: number): Promise<void>;\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        iface_ents = [e for e in entities if e.name == "IService"]
+        assert len(iface_ents) == 1
+        assert iface_ents[0].kind == "class"
+        assert "Interface:" in iface_ents[0].description
+
+    def test_enum_as_class_kind(self, tmp_path):
+        f = tmp_path / "colors.ts"
+        f.write_text(
+            "export enum Color {\n"
+            "    Red,\n"
+            "    Green,\n"
+            "    Blue,\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        enum_ents = [e for e in entities if e.name == "Color"]
+        assert len(enum_ents) == 1
+        assert enum_ents[0].kind == "class"
+        assert "Red" in enum_ents[0].description
+
+    def test_function_declaration(self, tmp_path):
+        f = tmp_path / "utils.ts"
+        f.write_text(
+            "export function helper(x: string): number {\n"
+            "    return parseInt(x, 10);\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert func_ents[0].name == "helper"
+        assert "helper(x: string): number" in func_ents[0].description
+        assert "public" in func_ents[0].description
+
+    def test_arrow_function(self, tmp_path):
+        f = tmp_path / "arrow.ts"
+        f.write_text(
+            "export const greet = (name: string): string => {\n"
+            "    return `Hello ${name}`;\n"
+            "};\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert func_ents[0].name == "greet"
+        assert "public" in func_ents[0].description
+
+    def test_export_visibility(self, tmp_path):
+        f = tmp_path / "vis.ts"
+        f.write_text(
+            "export function publicFn(): void {}\n"
+            "function privateFn(): void {}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        pub = [e for e in entities if e.name == "publicFn"][0]
+        priv = [e for e in entities if e.name == "privateFn"][0]
+        assert "public" in pub.description
+        assert "private" in priv.description
+
+    def test_import_relationships(self, tmp_path):
+        f = tmp_path / "imports.ts"
+        f.write_text(
+            "import { Foo, Bar } from './models';\n"
+            "import * as utils from './utils';\n"
+            "import Default from './default';\n"
+        )
+        h = TypeScriptHandler()
+        _, rels = h.extract(f)
+        import_rels = [r for r in rels if r.kind == "imports"]
+        targets = {r.target_name for r in import_rels}
+        assert "./models.Foo" in targets
+        assert "./models.Bar" in targets
+        assert "./utils" in targets
+        assert "./default" in targets
+
+    def test_type_annotations_preserved(self, tmp_path):
+        f = tmp_path / "typed.ts"
+        f.write_text(
+            "export function process(config: AppConfig, items: Array<Item>): Promise<Result> {\n"
+            "    return Promise.resolve({} as Result);\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        func = [e for e in entities if e.kind == "function"][0]
+        assert "config: AppConfig" in func.description
+        assert "Promise<Result>" in func.description
+
+    def test_tsx_parses(self, tmp_path):
+        f = tmp_path / "component.tsx"
+        f.write_text(
+            "import React from 'react';\n"
+            "\n"
+            "export function Button({ label }: { label: string }) {\n"
+            "    return <button>{label}</button>;\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert func_ents[0].name == "Button"
+
+    def test_js_file(self, tmp_path):
+        f = tmp_path / "legacy.js"
+        f.write_text(
+            "function add(a, b) {\n"
+            "    return a + b;\n"
+            "}\n"
+            "\n"
+            "module.exports = { add };\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        func_ents = [e for e in entities if e.kind == "function"]
+        assert len(func_ents) == 1
+        assert func_ents[0].name == "add"
+
+    def test_inheritance_relationships(self, tmp_path):
+        f = tmp_path / "child.ts"
+        f.write_text(
+            "export class Child extends Base implements IService {\n"
+            "    run(): void {}\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        _, rels = h.extract(f)
+        inherits = [r for r in rels if r.kind == "inherits"]
+        implements = [r for r in rels if r.kind == "implements"]
+        assert len(inherits) == 1
+        assert inherits[0].target_name == "Base"
+        assert len(implements) == 1
+        assert implements[0].target_name == "IService"
+
+    def test_deterministic_entities(self, tmp_path):
+        f = tmp_path / "det.ts"
+        f.write_text("export class Stable { run(): void {} }\n")
+        h = TypeScriptHandler()
+        e1, _ = h.extract(f)
+        e2, _ = h.extract(f)
+        assert [e.name for e in e1] == [e.name for e in e2]
+        assert [e.description for e in e1] == [e.description for e in e2]
+
+    def test_type_alias_in_preamble(self, tmp_path):
+        f = tmp_path / "types.ts"
+        f.write_text(
+            "export type ID = string;\n"
+            "type Internal = number;\n"
+        )
+        h = TypeScriptHandler()
+        entities, _ = h.extract(f)
+        module_ent = [e for e in entities if e.kind == "module"][0]
+        assert "ID" in module_ent.description.split("Exports:")[1].split("Private:")[0]
+
+
+# ── TypeScript ingest integration ──────────────────────────────────────
+
+
+class TestIngestTypeScript:
+    def test_ingests_ts_file(self, tmp_path):
+        (tmp_path / "app.ts").write_text(
+            "export class App {\n"
+            "    run(): void {}\n"
+            "}\n"
+        )
+        store = _FakeStore()
+        commit = ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "app" in names
+        assert "App" in names
+
+    def test_ts_and_py_together(self, tmp_path):
+        (tmp_path / "backend.py").write_text("class Server:\n    pass\n")
+        (tmp_path / "frontend.ts").write_text("export class Client { fetch(): void {} }\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "Server" in names
+        assert "Client" in names
+
+    def test_ts_entity_ids_deterministic(self, tmp_path):
+        (tmp_path / "det.ts").write_text("export class Stable {}\n")
+        store1 = _FakeStore()
+        store2 = _FakeStore()
+        ingest(store1, tmp_path, tmp_path, IngesterConfig())
+        ingest(store2, tmp_path, tmp_path, IngesterConfig())
+        ids1 = sorted(e.id for e in store1.entities)
+        ids2 = sorted(e.id for e in store2.entities)
+        assert ids1 == ids2
+
+
+# ── MarkdownHandler ─────────────────────────────────────────────────────
 
 
 class TestMarkdownHandler:
@@ -45,6 +554,9 @@ class TestMarkdownHandler:
         h = MarkdownHandler()
         chunks = h.chunks(f)
         assert len(chunks) > 1
+
+
+# ── Change Detection ────────────────────────────────────────────────────
 
 
 class TestChangeDetection:
@@ -110,6 +622,9 @@ class TestChangeDetection:
         assert h1 != h2
 
 
+# ── Blobs ────────────────────────────────────────────────────────────────
+
+
 class TestBlobs:
     def test_write_embedding_roundtrip(self, tmp_path):
         content = b"\x00\x01\x02\x03" * 256
@@ -132,3 +647,274 @@ class TestBlobs:
         assert d1 == d2
         d3 = write_summary(tmp_path, "different content")
         assert d1 != d3
+
+
+# ── Ingest integration ──────────────────────────────────────────────────
+
+
+def _cosine_sim(a: bytes, b: bytes) -> float:
+    n = len(a) // 4
+    if n == 0 or len(b) // 4 != n:
+        return 0.0
+    af = struct.unpack(f"{n}f", a)
+    bf = struct.unpack(f"{n}f", b)
+    dot = sum(x * y for x, y in zip(af, bf))
+    ma = math.sqrt(sum(x * x for x in af))
+    mb = math.sqrt(sum(x * x for x in bf))
+    if ma == 0 or mb == 0:
+        return 0.0
+    return dot / (ma * mb)
+
+
+def _brute_force_search(chunks, query_embedding, k, scope=None):
+    scored = []
+    for c in chunks:
+        if scope is not None and c.scope != scope:
+            continue
+        score = _cosine_sim(query_embedding, c.embedding)
+        scored.append(SearchResult(
+            chunk_text=c.chunk_text,
+            source_path=c.source_path,
+            score=score,
+            kind=c.kind,
+            scope=c.scope,
+        ))
+    scored.sort(key=lambda r: r.score, reverse=True)
+    return scored[:k]
+
+
+class _FakeStore:
+    """Minimal KnowledgeStore for testing ingest()."""
+
+    def __init__(self):
+        self.last_commit: GraphCommit | None = None
+        self.entities: list[Entity] = []
+        self.relationships: list[Relationship] = []
+        self.summaries: list[Summary] = []
+        self.chunks: list[EmbeddedChunk] = []
+
+    def graph_commit(self) -> GraphCommit:
+        return self.last_commit or GraphCommit("initial")
+
+    def get_entity(self, entity_id: str) -> Entity | None:
+        return None
+
+    def get_neighbors(self, entity_id: str):
+        return []
+
+    def get_summary(self, scope: ScopePath) -> Summary | None:
+        return None
+
+    def get_embedding(self, digest: Sha256) -> bytes | None:
+        return None
+
+    def search_similar(self, query_embedding, k, scope=None):
+        return _brute_force_search(self.chunks, query_embedding, k, scope)
+
+    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None) -> None:
+        self.last_commit = graph_commit
+        self.entities = list(entities)
+        self.relationships = list(relationships)
+        self.summaries = list(summaries)
+        if chunks:
+            self.chunks = list(chunks)
+
+
+class TestIngestPython:
+    def test_ingests_python_file(self, tmp_path):
+        (tmp_path / "app.py").write_text(
+            "class App:\n"
+            "    def run(self) -> None:\n"
+            "        pass\n"
+        )
+        store = _FakeStore()
+        commit = ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert len(store.entities) >= 2
+        names = {e.name for e in store.entities}
+        assert "app" in names
+        assert "App" in names
+
+    def test_entity_ids_are_deterministic(self, tmp_path):
+        (tmp_path / "det.py").write_text("class Stable:\n    pass\n")
+        store1 = _FakeStore()
+        store2 = _FakeStore()
+        ingest(store1, tmp_path, tmp_path, IngesterConfig())
+        ingest(store2, tmp_path, tmp_path, IngesterConfig())
+        ids1 = sorted(e.id for e in store1.entities)
+        ids2 = sorted(e.id for e in store2.entities)
+        assert ids1 == ids2
+
+    def test_graph_commit_is_deterministic(self, tmp_path):
+        (tmp_path / "det.py").write_text("class Stable:\n    pass\n")
+        store1 = _FakeStore()
+        store2 = _FakeStore()
+        c1 = ingest(store1, tmp_path, tmp_path, IngesterConfig())
+        c2 = ingest(store2, tmp_path, tmp_path, IngesterConfig())
+        assert c1 == c2
+
+    def test_generates_scope_summary(self, tmp_path):
+        (tmp_path / "foo.py").write_text("class Foo:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert len(store.summaries) >= 1
+        assert any("Foo" in s.markdown for s in store.summaries)
+
+    def test_writes_summary_blob(self, tmp_path):
+        (tmp_path / "foo.py").write_text("class Foo:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        summaries_dir = tmp_path / ".context-kernel" / "summaries"
+        assert summaries_dir.exists()
+        assert len(list(summaries_dir.iterdir())) >= 1
+
+    def test_inheritance_relationships(self, tmp_path):
+        (tmp_path / "hier.py").write_text(
+            "class Base:\n    pass\n"
+            "class Child(Base):\n    pass\n"
+        )
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        inherits = [r for r in store.relationships if r.kind == "inherits"]
+        assert len(inherits) >= 1
+
+    def test_skips_syntax_errors(self, tmp_path):
+        (tmp_path / "bad.py").write_text("def broken(:\n")
+        (tmp_path / "good.py").write_text("class Good:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "Good" in names
+
+    def test_skips_empty_files(self, tmp_path):
+        (tmp_path / "empty.py").write_text("")
+        (tmp_path / "full.py").write_text("X = 1\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert all(e.name != "empty" for e in store.entities)
+
+    def test_empty_directory(self, tmp_path):
+        store = _FakeStore()
+        commit = ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert commit is not None
+        assert store.entities == []
+
+
+class TestIngestMarkdownWithoutSummarizer:
+    def test_skips_md_without_summarizer(self, tmp_path):
+        (tmp_path / "README.md").write_text("# Hello\n\nContent.")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert store.entities == []
+        assert store.summaries == []
+
+    def test_processes_py_alongside_skipped_md(self, tmp_path):
+        (tmp_path / "README.md").write_text("# Hello")
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "App" in names
+
+
+class TestIngestMixedSources:
+    def test_multiple_python_files(self, tmp_path):
+        (tmp_path / "a.py").write_text("class Alpha:\n    pass\n")
+        (tmp_path / "b.py").write_text("class Beta:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "Alpha" in names
+        assert "Beta" in names
+
+    def test_nested_scopes(self, tmp_path):
+        sub = tmp_path / "pkg"
+        sub.mkdir()
+        (tmp_path / "root.py").write_text("class Root:\n    pass\n")
+        (sub / "child.py").write_text("class Child:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        names = {e.name for e in store.entities}
+        assert "Root" in names
+        assert "Child" in names
+        assert len(store.summaries) >= 2
+
+
+# ── Embedding at ingest (S5) ──────────────────────────────────────────
+
+
+class TestIngestWithEmbedder:
+    def test_embeds_entity_descriptions(self, tmp_path, embedder):
+        (tmp_path / "app.py").write_text(
+            "class UserService:\n"
+            "    def get_user(self, user_id: int) -> str:\n"
+            "        pass\n"
+        )
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        entity_chunks = [c for c in store.chunks if c.kind == "entity"]
+        assert len(entity_chunks) >= 2  # module + class at minimum
+
+    def test_embeds_scope_summaries(self, tmp_path, embedder):
+        (tmp_path / "app.py").write_text("class Foo:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        summary_chunks = [c for c in store.chunks if c.kind == "summary"]
+        assert len(summary_chunks) >= 1
+
+    def test_embedding_bytes_expected_length(self, tmp_path, embedder):
+        (tmp_path / "app.py").write_text("class Bar:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        for chunk in store.chunks:
+            assert len(chunk.embedding) == 1024 * 4  # 1024 floats * 4 bytes
+
+    def test_no_embedder_no_chunks(self, tmp_path):
+        (tmp_path / "app.py").write_text("class Baz:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert store.chunks == []
+
+    def test_chunk_source_paths_populated(self, tmp_path, embedder):
+        (tmp_path / "svc.py").write_text("class Svc:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        entity_chunks = [c for c in store.chunks if c.kind == "entity"]
+        assert all(c.source_path == "svc.py" for c in entity_chunks)
+
+    def test_chunks_are_deterministic(self, tmp_path, embedder):
+        (tmp_path / "det.py").write_text("class Stable:\n    pass\n")
+        store1 = _FakeStore()
+        store2 = _FakeStore()
+        ingest(store1, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        ingest(store2, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        ids1 = sorted(c.id for c in store1.chunks)
+        ids2 = sorted(c.id for c in store2.chunks)
+        assert ids1 == ids2
+
+    def test_search_similar_returns_ranked(self, tmp_path, embedder):
+        (tmp_path / "auth.py").write_text(
+            "class AuthService:\n"
+            "    def verify_token(self, token: str) -> bool:\n"
+            "        pass\n"
+        )
+        (tmp_path / "math_utils.py").write_text(
+            "def add(a: int, b: int) -> int:\n"
+            "    return a + b\n"
+        )
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        query_emb = embedder.embed("authentication and tokens", mode="query")
+        results = store.search_similar(query_emb, k=3)
+        assert len(results) > 0
+        assert results[0].score >= results[-1].score
+
+    def test_search_similar_scope_filter(self, tmp_path, embedder):
+        sub = tmp_path / "pkg"
+        sub.mkdir()
+        (tmp_path / "root.py").write_text("class Root:\n    pass\n")
+        (sub / "child.py").write_text("class Child:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), embedder=embedder)
+        query_emb = embedder.embed("class", mode="query")
+        filtered = store.search_similar(query_emb, k=20, scope=ScopePath(Path("pkg")))
+        assert all(r.scope == ScopePath(Path("pkg")) for r in filtered)

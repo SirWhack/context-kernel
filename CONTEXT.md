@@ -73,8 +73,16 @@ The mechanism that keeps materialized files in sync with their source. In v1, en
 _Avoid_: "read-time gate" (superseded by ADR-0010); "file watcher" (no daemon).
 
 **OrientationServer**:
-The stdio MCP surface (`ck mcp`) that exposes two read-only tools — `overview` and `find` — pointing coding agents at the right materialized files for a given question; a pure read-through over the materialized tree with no independent state or runtime synthesis (per THEORY.md invariant 3).
-_Avoid_: (to be sharpened via /grill-with-docs)
+The stdio MCP surface (`ck mcp`) that exposes two read-only tools — `overview` and `find` — pointing coding agents at the right materialized files for a given question. `overview` reads a scope's `AGENTS.md`; `find` performs embedding-similarity search over the hybrid corpus. Calls the Embedder at query time for vector computation — this is infrastructure, not runtime synthesis (per THEORY.md invariant 3 and [ADR-0012](./docs/adr/0012-find-retrieval-via-hybrid-embedding-search.md)).
+_Avoid_: "search server" (it points; files deliver); "RAG endpoint" (no LLM generation in the response path).
+
+**Hybrid corpus**:
+The combined set of entity descriptions (from StructuredHandlers) and per-scope summaries that `find` searches over. Entity descriptions provide fine-grained results (individual classes, functions); scope summaries provide coarse orientation (what a directory does). Both are embedded at ingest time and stored in the same vector index. Per [ADR-0012](./docs/adr/0012-find-retrieval-via-hybrid-embedding-search.md).
+_Avoid_: "search index" (implies a separate artifact — the hybrid corpus lives inside the Graph's vector store).
+
+**Asymmetric prompting**:
+The Qwen3-Embedding requirement that query-time and passage-time embeddings use different prompt formats. Passages are embedded as plain text; queries are prefixed with `Instruct: {task}\nQuery: {text}`. Omitting the prefix costs 1–5% retrieval accuracy. The `Embedder` interface exposes this via a `mode` parameter (`"passage"` or `"query"`).
+_Avoid_: "query prefix" (too vague — the format is specific to the model).
 
 ## Relationships
 
@@ -86,7 +94,9 @@ _Avoid_: (to be sharpened via /grill-with-docs)
 - The **Freshness gate** runs before any read of a **Materialized file**.
 - An **Ingestion pass** updates the **Graph**; a **Materialization pass** projects the **Graph** into **Materialized files**.
 - An **Agentic engineer** typically delegates tasks to a **Coding agent**; the **Coding agent** invokes **ck** and reads the materialized tree.
-- The **OrientationServer** is a read-through over the materialized tree; the **Freshness gate** runs inside it before any chunk is returned.
+- The **OrientationServer** searches the **Hybrid corpus** via embedding similarity; `overview` reads a **Materialized file** directly.
+- The **Hybrid corpus** is populated during the **Ingestion pass** — entity descriptions and scope summaries are embedded and stored in the **Graph**'s vector index.
+- **Asymmetric prompting** governs how the **Embedder** encodes text differently at ingest time (passage) vs. query time (query).
 
 ## Example dialogue
 

@@ -3,7 +3,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from context_kernel.graph.protocol import Entity, Neighbor, Relationship, Summary
+from context_kernel.graph.protocol import Entity, Neighbor, Relationship, SearchResult, Summary
 from context_kernel.materializer import materialize
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
 from context_kernel.materializer.pinned import extract, merge
@@ -34,7 +34,10 @@ class _FakeStore:
     def get_embedding(self, digest: Sha256) -> bytes | None:
         return None
 
-    def upsert(self, graph_commit, entities, relationships, summaries) -> None:
+    def search_similar(self, query_embedding, k, scope=None):
+        return []
+
+    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None) -> None:
         pass
 
 

@@ -1,10 +1,21 @@
 """MCP tools: overview(scope_path, max_tokens), find(query, scope_path). See ARCHITECTURE.md §2.5."""
 
-from pathlib import Path
+from __future__ import annotations
 
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from context_kernel.graph.protocol import KnowledgeStore
 from context_kernel.materializer.headers import parse
-from context_kernel.orientation_server.response import _CHARS_PER_TOKEN
+from context_kernel.orientation_server.response import _CHARS_PER_TOKEN, assemble
+from context_kernel.orientation_server.similarity import nearest_chunks
 from context_kernel.types import ScopePath
+
+if TYPE_CHECKING:
+    from context_kernel.ingester.embedder import Embedder
+
+log = logging.getLogger(__name__)
 
 
 def overview(scope: ScopePath, max_tokens: int, tree_root: Path) -> str:
@@ -28,10 +39,34 @@ def overview(scope: ScopePath, max_tokens: int, tree_root: Path) -> str:
     return cut
 
 
-def find(query: str, scope: ScopePath, tree_root: Path) -> str:
-    """Stub for S1 — returns a canned response. Real embedding-similarity lookup in S5."""
-    return (
-        f"[S1 stub] `find` is not yet implemented. "
-        f"Query: \"{query}\", scope: `{scope}`. "
-        f"Use `overview` for scope summaries. Real implementation in S5."
-    )
+def find(
+    query: str,
+    scope: ScopePath | None,
+    max_tokens: int,
+    tree_root: Path,
+    store: KnowledgeStore,
+    embedder: "Embedder | None",
+) -> str:
+    """Embedding-similarity search over the hybrid corpus. Per ADR-0012."""
+    if embedder is None:
+        return (
+            "Embedding service not configured. "
+            "Use `overview` for scope-level orientation."
+        )
+
+    try:
+        results = nearest_chunks(query, store, embedder, k=10, scope=scope)
+    except Exception as exc:
+        log.warning("find: embedding failed: %s", exc)
+        return (
+            f"Embedding service unavailable: {exc}. "
+            "Start the embedder server and retry, or use `overview` for scope-level orientation."
+        )
+
+    if not results:
+        scope_msg = f" in scope `{scope}`" if scope else ""
+        return f"No results found for query: \"{query}\"{scope_msg}."
+
+    chunks = [r.chunk_text for r in results]
+    paths = [r.source_path for r in results]
+    return assemble(chunks, paths, max_tokens)
