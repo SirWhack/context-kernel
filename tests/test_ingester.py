@@ -927,3 +927,91 @@ class TestIngestWithEmbedder:
         query_emb = embedder.embed("class", mode="query")
         filtered = store.search_similar(query_emb, k=20, scope=ScopePath(Path("pkg")))
         assert all(r.scope == ScopePath(Path("pkg")) for r in filtered)
+
+
+# ── Cross-project namespacing (S9) ─────────────────────────────────────
+
+
+class TestIngestProjectNamespacing:
+    def test_project_name_prefixes_scopes(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), project_name="proj-a")
+        scope_strs = [str(s) for s in store.scope_entities.keys()]
+        assert all(s.startswith("proj-a") for s in scope_strs)
+
+    def test_project_name_changes_entity_ids(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store_a = _FakeStore()
+        store_b = _FakeStore()
+        ingest(store_a, tmp_path, tmp_path, IngesterConfig(), project_name="proj-a")
+        ingest(store_b, tmp_path, tmp_path, IngesterConfig(), project_name="proj-b")
+        ids_a = {e.id for e in store_a.entities}
+        ids_b = {e.id for e in store_b.entities}
+        assert ids_a.isdisjoint(ids_b)
+
+    def test_no_project_name_matches_legacy_behavior(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store_legacy = _FakeStore()
+        store_none = _FakeStore()
+        ingest(store_legacy, tmp_path, tmp_path, IngesterConfig())
+        ingest(store_none, tmp_path, tmp_path, IngesterConfig(), project_name=None)
+        ids_legacy = sorted(e.id for e in store_legacy.entities)
+        ids_none = sorted(e.id for e in store_none.entities)
+        assert ids_legacy == ids_none
+
+    def test_no_project_name_scopes_unprefixed(self, tmp_path):
+        sub = tmp_path / "src"
+        sub.mkdir()
+        (sub / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), project_name=None)
+        scope_strs = [str(s) for s in store.scope_entities.keys()]
+        assert "src" in scope_strs
+
+    def test_two_projects_same_store_no_collision(self, tmp_path):
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "app.py").write_text("class App:\n    pass\n")
+        (dir_b / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, dir_a, tmp_path, IngesterConfig(), project_name="proj-a")
+        entities_a = list(store.entities)
+        scopes_a = dict(store.scope_entities)
+        ingest(store, dir_b, tmp_path, IngesterConfig(), project_name="proj-b")
+        entities_b = list(store.entities)
+        ids_a = {e.id for e in entities_a}
+        ids_b = {e.id for e in entities_b}
+        assert ids_a.isdisjoint(ids_b)
+        assert any("proj-a" in str(s) for s in scopes_a.keys())
+        scope_strs_b = [str(s) for s in store.scope_entities.keys()]
+        assert any("proj-b" in s for s in scope_strs_b)
+
+    def test_project_name_prefixes_summary_scopes(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), project_name="my-proj")
+        summary_scopes = [str(s.scope) for s in store.summaries]
+        assert all("my-proj" in s for s in summary_scopes)
+
+
+# ── Ingester observability (S8) ────────────────────────────────────────
+
+
+class TestIngestLogging:
+    def test_emits_ingested_log(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        with caplog.at_level(logging.INFO, logger="context_kernel.ingester"):
+            ingest(store, tmp_path, tmp_path, IngesterConfig())
+        ingested_records = [r for r in caplog.records if r.getMessage() == "ingested"]
+        assert len(ingested_records) == 1
+        rec = ingested_records[0]
+        assert rec.files_processed >= 1
+        assert rec.entities >= 1
+        assert rec.relationships >= 0
+        assert rec.graph_commit is not None
+        assert rec.duration_ms >= 0

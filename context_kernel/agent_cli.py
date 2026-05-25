@@ -1,6 +1,7 @@
 """AgentCLI — `ck` entrypoint. Dispatches to other modules. See ARCHITECTURE.md §2.6."""
 
 import argparse
+import logging
 import subprocess
 import sys
 import time
@@ -9,7 +10,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from context_kernel.config_store import load as load_config
+from context_kernel.logging import configure as configure_logging, invocation_id as _invocation_var
 from context_kernel.operational_journal import JournalEntry, append
+
+log = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -45,16 +49,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = load_config(getattr(args, "config", None))
 
-    invocation_id = uuid4()
+    configure_logging()
+    inv_id = uuid4()
+    _invocation_var.set(str(inv_id))
+
     started = datetime.now(timezone.utc)
     t0 = time.monotonic()
     exit_code = 0
+    graph_commit: str | None = None
 
     try:
         if args.command == "init":
             return _cmd_init(args)
         elif args.command == "ingest":
-            _cmd_ingest(args, config)
+            graph_commit = _cmd_ingest(args, config)
         elif args.command == "materialize":
             _cmd_materialize(args, config)
         elif args.command == "check":
@@ -62,20 +70,20 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "mcp":
             _cmd_mcp(args, config)
     except Exception as exc:
-        print(f"ck {args.command}: {exc}", file=sys.stderr)
+        log.error("ck %s: %s", args.command, exc)
         exit_code = 1
 
     duration_ms = int((time.monotonic() - t0) * 1000)
     journal_path = config.portfolio_root / ".context-kernel" / "log.md"
     raw_args = [str(v) for k, v in vars(args).items() if k not in {"command", "config"} and v is not None]
     entry = JournalEntry(
-        invocation_id=invocation_id,
+        invocation_id=inv_id,
         started_at=started,
         command=args.command,
         args=raw_args,
         duration_ms=duration_ms,
         exit_code=exit_code,
-        regen_chain=[],
+        graph_commit=graph_commit,
     )
     append(journal_path, entry)
     return exit_code
@@ -86,27 +94,34 @@ def _cmd_init(args: argparse.Namespace) -> int:
     git_dir = portfolio / ".git"
     hooks_dir = portfolio / ".githooks" / "pre-commit"
     if not git_dir.exists():
-        print("ck init: not a git repository", file=sys.stderr)
+        log.error("ck init: not a git repository")
         return 1
     if not hooks_dir.exists():
-        print(f"ck init: {hooks_dir} not found", file=sys.stderr)
+        log.error("ck init: %s not found", hooks_dir)
         return 1
     subprocess.run(
         ["git", "config", "core.hooksPath", ".githooks"],
         cwd=portfolio,
         check=True,
     )
-    print(f"ck init: core.hooksPath set to .githooks in {portfolio}", file=sys.stderr)
+    log.info("ck init: core.hooksPath set to .githooks in %s", portfolio)
     return 0
 
 
-def _cmd_ingest(args: argparse.Namespace, config) -> None:
+def _cmd_ingest(args: argparse.Namespace, config) -> str:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester import ingest
 
     portfolio = args.portfolio.resolve()
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
-    ingest(store, portfolio, portfolio, config.ingester)
+    commit = None
+    for project in config.projects:
+        project_name = None if project.path == Path(".") else project.name
+        commit = ingest(
+            store, portfolio / project.path, portfolio, config.ingester,
+            project_name=project_name,
+        )
+    return str(commit)
 
 
 def _cmd_materialize(args: argparse.Namespace, config) -> None:
@@ -120,8 +135,15 @@ def _cmd_materialize(args: argparse.Namespace, config) -> None:
     all_written: list[Path] = []
 
     if args.all_scopes:
-        for scope in discover_scopes(portfolio):
-            all_written.extend(materialize(scope, store, portfolio, config.materializer))
+        for project in config.projects:
+            project_root = portfolio / project.path
+            project_name = None if project.path == Path(".") else project.name
+            for scope in discover_scopes(project_root):
+                if project_name:
+                    full_scope = ScopePath(Path(project_name) / scope)
+                else:
+                    full_scope = scope
+                all_written.extend(materialize(full_scope, store, portfolio, config.materializer))
         for spec in config.materializer.views:
             all_written.extend(materialize_view(spec, store, portfolio, config.materializer))
     elif args.scope:

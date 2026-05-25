@@ -1,11 +1,23 @@
 """ConfigStore — loads .context-kernel/config.toml at the start of every `ck` invocation. See ARCHITECTURE.md §3.1."""
 
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from context_kernel.types import ViewSpec
+
+_PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.\-]*$")
+
+
+@dataclass(frozen=True)
+class ProjectSpec:
+    path: Path
+
+    @property
+    def name(self) -> str:
+        return self.path.name
 
 
 @dataclass(frozen=True)
@@ -37,6 +49,28 @@ class Config:
     materializer: MaterializerConfig
     orientation: OrientationConfig
     portfolio_root: Path
+    projects: list[ProjectSpec] = field(default_factory=lambda: [ProjectSpec(path=Path("."))])
+
+
+def _validate_projects(projects: list[ProjectSpec], portfolio_root: Path) -> None:
+    seen_names: set[str] = set()
+    for project in projects:
+        if project.path.is_absolute():
+            raise ValueError(f"Project path must be relative: {project.path}")
+        name = project.name
+        if not name:
+            raise ValueError(f"Project path resolves to empty name: {project.path}")
+        if not _PROJECT_NAME_RE.match(name):
+            raise ValueError(
+                f"Project name {name!r} (from path {project.path}) must match "
+                f"{_PROJECT_NAME_RE.pattern}"
+            )
+        if name in seen_names:
+            raise ValueError(f"Duplicate project name: {name!r}")
+        seen_names.add(name)
+        resolved = portfolio_root / project.path
+        if not resolved.exists():
+            raise ValueError(f"Project path does not exist: {resolved}")
 
 
 def load(config_path: Path | None = None) -> Config:
@@ -61,6 +95,13 @@ def load(config_path: Path | None = None) -> Config:
 
     portfolio_root = Path(raw.get("portfolio_root", ".")).resolve()
 
+    projects_raw = raw.get("projects")
+    if projects_raw:
+        projects = [ProjectSpec(path=Path(p["path"])) for p in projects_raw]
+        _validate_projects(projects, portfolio_root)
+    else:
+        projects = [ProjectSpec(path=Path("."))]
+
     return Config(
         ingester=IngesterConfig(**{
             k: v for k, v in ingester_raw.items()
@@ -72,4 +113,5 @@ def load(config_path: Path | None = None) -> Config:
             if k in OrientationConfig.__dataclass_fields__
         }),
         portfolio_root=portfolio_root,
+        projects=projects,
     )

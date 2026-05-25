@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -10,6 +11,16 @@ import httpx
 import pytest
 
 from context_kernel.ingester.embedder import HttpEmbedder
+
+
+@pytest.fixture(autouse=True)
+def _reset_ck_logger():
+    """Reset the context_kernel logger between tests so configure() state doesn't leak."""
+    yield
+    root = logging.getLogger("context_kernel")
+    root.handlers.clear()
+    root.propagate = True
+    root.setLevel(logging.WARNING)
 
 _EMBEDDER_PORT = 8081
 _EMBEDDER_URL = f"http://127.0.0.1:{_EMBEDDER_PORT}"

@@ -16,13 +16,15 @@ class TestAppend:
             args=["--portfolio", "."],
             duration_ms=12345,
             exit_code=0,
-            regen_chain=[],
+            graph_commit="abcdef1234567890",
         )
         append(path, entry)
         text = path.read_text()
         assert "timestamp" in text
+        assert "graph_commit" in text
         assert "ingest" in text
         assert "12345" in text
+        assert "abcdef12" in text
 
     def test_appends_to_existing(self, tmp_path):
         path = tmp_path / "log.md"
@@ -33,7 +35,7 @@ class TestAppend:
             args=[],
             duration_ms=100,
             exit_code=0,
-            regen_chain=[],
+            graph_commit="aaaa1111",
         )
         e2 = JournalEntry(
             invocation_id=uuid4(),
@@ -42,7 +44,7 @@ class TestAppend:
             args=["--all"],
             duration_ms=50,
             exit_code=0,
-            regen_chain=[],
+            graph_commit=None,
         )
         append(path, e1)
         append(path, e2)
@@ -60,7 +62,38 @@ class TestAppend:
             args=["AGENTS.md"],
             duration_ms=23,
             exit_code=1,
-            regen_chain=[],
+            graph_commit=None,
         )
         append(path, entry)
         assert str(uid) in path.read_text()
+
+    def test_graph_commit_truncated(self, tmp_path):
+        path = tmp_path / "log.md"
+        entry = JournalEntry(
+            invocation_id=uuid4(),
+            started_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            command="ingest",
+            args=[],
+            duration_ms=10,
+            exit_code=0,
+            graph_commit="abcdef1234567890abcdef1234567890",
+        )
+        append(path, entry)
+        text = path.read_text()
+        assert "abcdef12" in text
+        assert "abcdef1234567890abcdef1234567890" not in text
+
+    def test_graph_commit_none_renders_dash(self, tmp_path):
+        path = tmp_path / "log.md"
+        entry = JournalEntry(
+            invocation_id=uuid4(),
+            started_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+            command="materialize",
+            args=[],
+            duration_ms=10,
+            exit_code=0,
+            graph_commit=None,
+        )
+        append(path, entry)
+        text = path.read_text()
+        assert "| - |" in text

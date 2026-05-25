@@ -1,5 +1,7 @@
 """Materializer — sole writer to the materialized tree. See ARCHITECTURE.md §2.3, invariant 1."""
 
+import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -8,8 +10,6 @@ from context_kernel.graph.protocol import KnowledgeStore
 from context_kernel.ingester.change_detection import source_tree_hash
 from context_kernel.materializer.errors import MaterializationError
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
-import sys
-
 from context_kernel.materializer.pinned import extract, merge
 from context_kernel.materializer.templates import render_agents_md, render_claude_md_bridge
 from context_kernel.materializer.views import render_view
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from context_kernel.config_store import MaterializerConfig
 
 __all__ = ["MaterializationError", "materialize", "materialize_view"]
+
+log = logging.getLogger(__name__)
 
 
 def _write_if_changed(path: Path, content: str) -> bool:
@@ -41,6 +43,7 @@ def materialize(
     agents_path = scope_dir / "AGENTS.md"
     claude_path = scope_dir / "CLAUDE.md"
 
+    t0 = time.monotonic()
     gc = store.graph_commit()
     sth = source_tree_hash(scope_dir, tree_root)
 
@@ -57,7 +60,7 @@ def materialize(
     if agents_path.exists():
         pinned_blocks, pinned_warnings = extract(agents_path.read_text(encoding="utf-8"))
         for w in pinned_warnings:
-            print(f"warning: {scope}: {w}", file=sys.stderr)
+            log.warning("%s: %s", scope, w)
 
     header = FreshnessHeader(
         graph_commit=gc,
@@ -75,6 +78,14 @@ def materialize(
         written.append(agents_path)
     if _write_if_changed(claude_path, render_claude_md_bridge()):
         written.append(claude_path)
+
+    if written:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        log.info(
+            "materialized",
+            extra={"scope": str(scope), "graph_commit": str(gc), "duration_ms": elapsed, "files_written": len(written)},
+        )
+
     return written
 
 
@@ -96,6 +107,7 @@ def materialize_view(
     config: "MaterializerConfig",
 ) -> list[Path]:
     """Write one configured cross-cutting view under .context-kernel/views/. Returns paths written."""
+    t0 = time.monotonic()
     out_path = _view_output_path(spec, tree_root)
     gc = store.graph_commit()
 
@@ -116,4 +128,12 @@ def materialize_view(
     written: list[Path] = []
     if _write_if_changed(out_path, content):
         written.append(out_path)
+
+    if written:
+        elapsed = int((time.monotonic() - t0) * 1000)
+        log.info(
+            "materialized_view",
+            extra={"view": spec.name, "kind": spec.kind, "graph_commit": str(gc), "duration_ms": elapsed},
+        )
+
     return written

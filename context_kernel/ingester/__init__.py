@@ -2,6 +2,7 @@
 
 import hashlib
 import logging
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,7 +35,9 @@ _STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
 _CHUNK: list[ChunkHandler] = [MarkdownHandler()]
 
 
-def _derive_entity_id(name: str, kind: str, source_file: str) -> str:
+def _derive_entity_id(name: str, kind: str, source_file: str, project: str | None = None) -> str:
+    if project:
+        return hashlib.sha256(f"{project}:{name}:{kind}:{source_file}".encode()).hexdigest()
     return hashlib.sha256(f"{name}:{kind}:{source_file}".encode()).hexdigest()
 
 
@@ -42,12 +45,13 @@ def _resolve_raw_entities(
     raw_entities: list[RawEntity],
     raw_relationships: list[RawRelationship],
     source_file: str,
+    project: str | None = None,
 ) -> tuple[list[Entity], list[Relationship]]:
     name_to_id: dict[str, str] = {}
     entities: list[Entity] = []
 
     for raw in raw_entities:
-        eid = _derive_entity_id(raw.name, raw.kind, source_file)
+        eid = _derive_entity_id(raw.name, raw.kind, source_file, project)
         name_to_id[raw.name] = eid
         entities.append(Entity(id=eid, name=raw.name, kind=raw.kind, description=raw.description))
 
@@ -55,10 +59,10 @@ def _resolve_raw_entities(
     for raw_rel in raw_relationships:
         src_id = name_to_id.get(raw_rel.source_name)
         if src_id is None:
-            src_id = _derive_entity_id(raw_rel.source_name, "unknown", source_file)
+            src_id = _derive_entity_id(raw_rel.source_name, "unknown", source_file, project)
         tgt_id = name_to_id.get(raw_rel.target_name)
         if tgt_id is None:
-            tgt_id = _derive_entity_id(raw_rel.target_name, "unknown", raw_rel.target_name)
+            tgt_id = _derive_entity_id(raw_rel.target_name, "unknown", raw_rel.target_name, project)
         relationships.append(Relationship(
             source_id=src_id,
             target_id=tgt_id,
@@ -107,10 +111,12 @@ def ingest(
     blob_root: Path,
     config: "IngesterConfig",
     *,
+    project_name: str | None = None,
     summarizer: "Summarizer | None" = None,
     embedder: "Embedder | None" = None,
 ) -> GraphCommit:
     """Detect changed sources, extract entities, upsert into Graph. Return the new GraphCommit."""
+    t0 = time.monotonic()
     sources_root = sources_root.resolve()
     blob_root = blob_root.resolve()
 
@@ -131,6 +137,8 @@ def ingest(
     for file_path in all_files:
         rel_path = str(file_path.relative_to(sources_root))
         scope_key = str(file_path.parent.relative_to(sources_root))
+        if project_name:
+            scope_key = str(Path(project_name) / scope_key)
 
         handler_found = False
 
@@ -139,7 +147,7 @@ def ingest(
                 handler_found = True
                 raw_ents, raw_rels = handler.extract(file_path)
                 if raw_ents:
-                    entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path)
+                    entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path, project_name)
                     all_entities.extend(entities)
                     all_relationships.extend(relationships)
                     scope_entities[scope_key].extend(entities)
@@ -165,6 +173,7 @@ def ingest(
                         [RawEntity(name=e.name, kind=e.kind, description=e.description) for e in raw_ents],
                         [RawRelationship(source_name=r.source_id, target_name=r.target_id, kind=r.kind, description=r.description) for r in raw_rels],
                         rel_path,
+                        project_name,
                     )
                     all_entities.extend(entities)
                     all_relationships.extend(relationships)
@@ -225,4 +234,17 @@ def ingest(
         all_chunks or None,
         typed_scope_entities or None,
     )
+
+    elapsed = int((time.monotonic() - t0) * 1000)
+    log.info(
+        "ingested",
+        extra={
+            "files_processed": len(all_files),
+            "entities": len(all_entities),
+            "relationships": len(all_relationships),
+            "graph_commit": str(commit),
+            "duration_ms": elapsed,
+        },
+    )
+
     return commit

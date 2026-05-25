@@ -19,10 +19,10 @@ class JournalEntry:
     args: list[str]
     duration_ms: int
     exit_code: int
-    regen_chain: list[str]
+    graph_commit: str | None
 
 
-_TABLE_HEADER = "| timestamp | invocation | command | args | duration_ms | exit |\n|---|---|---|---|---|---|\n"
+_TABLE_HEADER = "| timestamp | invocation | command | args | duration_ms | exit | graph_commit |\n|---|---|---|---|---|---|---|\n"
 
 
 def append(journal_path: Path, entry: JournalEntry) -> None:
@@ -30,7 +30,8 @@ def append(journal_path: Path, entry: JournalEntry) -> None:
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     ts = entry.started_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     args_str = " ".join(entry.args) if entry.args else ""
-    row = f"| {ts} | {entry.invocation_id} | {entry.command} | {args_str} | {entry.duration_ms} | {entry.exit_code} |\n"
+    gc = entry.graph_commit[:8] if entry.graph_commit else "-"
+    row = f"| {ts} | {entry.invocation_id} | {entry.command} | {args_str} | {entry.duration_ms} | {entry.exit_code} | {gc} |\n"
 
     if not journal_path.exists():
         journal_path.write_text(_TABLE_HEADER + row)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,8 @@ from context_kernel.materializer.headers import parse
 
 if TYPE_CHECKING:
     from context_kernel.config_store import Config
+
+log = logging.getLogger(__name__)
 
 
 class StaleReadError(Exception):
@@ -37,10 +40,23 @@ def check(path: Path, store: KnowledgeStore, tree_root: Path, config: "Config | 
     gc_current = store.graph_commit()
 
     if header and header.graph_commit == gc_current and header.source_tree_hash == sth_current:
+        log.info("freshness hit", extra={"scope": str(scope), "graph_commit": str(gc_current)})
         return path.read_bytes()
 
+    stale_gc = str(header.graph_commit) if header else None
+    source_tree_is_stale = header is None or header.source_tree_hash != sth_current
+    log.info(
+        "freshness miss",
+        extra={
+            "scope": str(scope),
+            "stale_graph_commit": stale_gc,
+            "current_graph_commit": str(gc_current),
+            "source_tree_stale": source_tree_is_stale,
+        },
+    )
+
     try:
-        if header is None or header.source_tree_hash != sth_current:
+        if source_tree_is_stale:
             ingest_config = config.ingester if config else None
             ingest(store, scope_dir, tree_root / ".context-kernel", ingest_config)
 

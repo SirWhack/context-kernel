@@ -605,15 +605,16 @@ class TestPinnedBlockIntegration:
         assert "Completely new summary content." in text
         assert "Keep me." in text
 
-    def test_malformed_block_warns(self, tmp_path, capsys):
+    def test_malformed_block_warns(self, tmp_path, caplog):
         scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
         agents = scope_dir / "AGENTS.md"
         original = agents.read_text()
         agents.write_text(original.rstrip() + "\n\n<!-- pinned -->\nOrphan content\n")
         store._commit = "bbcc"
-        materialize(scope, store, tmp_path, MaterializerConfig())
-        captured = capsys.readouterr()
-        assert "Unpaired" in captured.err
+        import logging
+        with caplog.at_level(logging.WARNING, logger="context_kernel.materializer"):
+            materialize(scope, store, tmp_path, MaterializerConfig())
+        assert any("Unpaired" in r.message for r in caplog.records)
 
 
 class TestIngestPersistsScopeEntities:
@@ -627,3 +628,53 @@ class TestIngestPersistsScopeEntities:
         for scope, entities in store._scope_entities.items():
             assert isinstance(scope, Path)
             assert len(entities) > 0
+
+
+# ── Materializer observability (S8) ────────────────────────────────────
+
+
+class TestMaterializerLogging:
+    def test_emits_materialized_log(self, tmp_path, caplog):
+        import logging
+        scope_dir = tmp_path / "src"
+        scope_dir.mkdir()
+        (scope_dir / "app.py").write_text("x = 1\n")
+        store = _FakeStore()
+        with caplog.at_level(logging.INFO, logger="context_kernel.materializer"):
+            materialize(ScopePath(Path("src")), store, tmp_path, MaterializerConfig())
+        mat_records = [r for r in caplog.records if r.getMessage() == "materialized"]
+        assert len(mat_records) == 1
+        rec = mat_records[0]
+        assert rec.scope == "src"
+        assert rec.graph_commit is not None
+        assert rec.duration_ms >= 0
+        assert rec.files_written >= 1
+
+    def test_no_log_on_skip(self, tmp_path, caplog):
+        import logging
+        scope_dir = tmp_path / "src"
+        scope_dir.mkdir()
+        (scope_dir / "app.py").write_text("x = 1\n")
+        store = _FakeStore()
+        materialize(ScopePath(Path("src")), store, tmp_path, MaterializerConfig())
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="context_kernel.materializer"):
+            materialize(ScopePath(Path("src")), store, tmp_path, MaterializerConfig())
+        mat_records = [r for r in caplog.records if r.getMessage() == "materialized"]
+        assert len(mat_records) == 0
+
+    def test_emits_view_log(self, tmp_path, caplog):
+        import logging
+        store = _FakeStore()
+        store._summaries = [
+            Summary(scope=ScopePath(Path(".")), digest=Sha256("aa" * 32), markdown="Summary."),
+        ]
+        spec = ViewSpec(name="index", kind="index", params={})
+        with caplog.at_level(logging.INFO, logger="context_kernel.materializer"):
+            materialize_view(spec, store, tmp_path, MaterializerConfig())
+        view_records = [r for r in caplog.records if r.getMessage() == "materialized_view"]
+        assert len(view_records) == 1
+        rec = view_records[0]
+        assert rec.view == "index"
+        assert rec.kind == "index"
+        assert rec.duration_ms >= 0
