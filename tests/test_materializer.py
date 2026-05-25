@@ -8,7 +8,7 @@ from context_kernel.materializer import materialize_view
 from context_kernel.materializer.views import render_view
 from context_kernel.materializer import materialize
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
-from context_kernel.materializer.pinned import extract, merge
+from context_kernel.materializer.pinned import PinnedBlock, extract, merge
 from context_kernel.materializer.templates import render_agents_md, render_claude_md_bridge
 from context_kernel.config_store import MaterializerConfig
 from context_kernel.types import GraphCommit, Sha256, ScopePath, ViewSpec
@@ -98,29 +98,174 @@ class TestFreshnessHeaderRoundTrip:
 
 
 class TestPinnedBlocks:
+    # ── extract basics ──
+
     def test_extract_no_blocks(self):
-        assert extract("no pinned blocks here") == []
+        blocks, warnings = extract("no pinned blocks here")
+        assert blocks == []
+        assert warnings == []
 
-    def test_extract_one_block(self):
+    def test_extract_one_unlabeled(self):
         text = "before\n<!-- pinned -->\nmy content\n<!-- /pinned -->\nafter"
-        blocks = extract(text)
+        blocks, warnings = extract(text)
         assert len(blocks) == 1
-        assert "my content" in blocks[0]
+        assert blocks[0].label is None
+        assert blocks[0].content == "my content"
+        assert warnings == []
 
-    def test_extract_multiple_blocks(self):
+    def test_extract_multiple_unlabeled(self):
         text = "<!-- pinned -->\nblock1\n<!-- /pinned -->\nmid\n<!-- pinned -->\nblock2\n<!-- /pinned -->"
-        blocks = extract(text)
+        blocks, _ = extract(text)
         assert len(blocks) == 2
+        assert blocks[0].content == "block1"
+        assert blocks[1].content == "block2"
+
+    # ── labels ──
+
+    def test_extract_labeled(self):
+        text = "<!-- pinned:deprecation -->\nThis is deprecated.\n<!-- /pinned -->"
+        blocks, warnings = extract(text)
+        assert len(blocks) == 1
+        assert blocks[0].label == "deprecation"
+        assert blocks[0].content == "This is deprecated."
+        assert warnings == []
+
+    def test_extract_mixed_labeled_and_unlabeled(self):
+        text = (
+            "<!-- pinned:note -->\nLabeled note.\n<!-- /pinned -->\n"
+            "<!-- pinned -->\nUnlabeled note.\n<!-- /pinned -->"
+        )
+        blocks, _ = extract(text)
+        assert len(blocks) == 2
+        assert blocks[0].label == "note"
+        assert blocks[1].label is None
+
+    def test_label_with_hyphens_and_digits(self):
+        text = "<!-- pinned:auth-v2-migration -->\ncontent\n<!-- /pinned -->"
+        blocks, _ = extract(text)
+        assert blocks[0].label == "auth-v2-migration"
+
+    # ── whitespace normalization ──
+
+    def test_strips_leading_trailing_blank_lines(self):
+        text = "<!-- pinned -->\n\n\nactual content\n\n\n<!-- /pinned -->"
+        blocks, _ = extract(text)
+        assert blocks[0].content == "actual content"
+
+    def test_preserves_internal_blank_lines(self):
+        text = "<!-- pinned -->\nline1\n\nline2\n<!-- /pinned -->"
+        blocks, _ = extract(text)
+        assert blocks[0].content == "line1\n\nline2"
+
+    def test_empty_pinned_block(self):
+        text = "<!-- pinned -->\n\n<!-- /pinned -->"
+        blocks, _ = extract(text)
+        assert len(blocks) == 1
+        assert blocks[0].content == ""
+
+    # ── deduplication ──
+
+    def test_duplicate_labels_keeps_last(self):
+        text = (
+            "<!-- pinned:note -->\nfirst\n<!-- /pinned -->\n"
+            "<!-- pinned:note -->\nsecond\n<!-- /pinned -->"
+        )
+        blocks, warnings = extract(text)
+        assert len(blocks) == 1
+        assert blocks[0].content == "second"
+        assert any("Duplicate" in w and "note" in w for w in warnings)
+
+    def test_unlabeled_never_deduped(self):
+        text = (
+            "<!-- pinned -->\nsame\n<!-- /pinned -->\n"
+            "<!-- pinned -->\nsame\n<!-- /pinned -->"
+        )
+        blocks, warnings = extract(text)
+        assert len(blocks) == 2
+        assert warnings == []
+
+    def test_dedup_preserves_order_with_other_blocks(self):
+        text = (
+            "<!-- pinned:a -->\nfirst-a\n<!-- /pinned -->\n"
+            "<!-- pinned -->\nunlabeled\n<!-- /pinned -->\n"
+            "<!-- pinned:a -->\nsecond-a\n<!-- /pinned -->"
+        )
+        blocks, _ = extract(text)
+        assert len(blocks) == 2
+        assert blocks[0].content == "unlabeled"
+        assert blocks[1].label == "a"
+        assert blocks[1].content == "second-a"
+
+    # ── malformed block warnings ──
+
+    def test_unpaired_opening_tag_warns(self):
+        text = "before\n<!-- pinned -->\norphan content\nafter"
+        blocks, warnings = extract(text)
+        assert len(blocks) == 0
+        assert len(warnings) == 1
+        assert "Unpaired" in warnings[0]
+
+    def test_unpaired_labeled_tag_warns(self):
+        text = "<!-- pinned:oops -->\nno closing"
+        blocks, warnings = extract(text)
+        assert len(blocks) == 0
+        assert len(warnings) == 1
+        assert "oops" in warnings[0]
+
+    def test_valid_and_unpaired_together(self):
+        text = (
+            "<!-- pinned -->\nvalid\n<!-- /pinned -->\n"
+            "<!-- pinned:broken -->\nno close"
+        )
+        blocks, warnings = extract(text)
+        assert len(blocks) == 1
+        assert blocks[0].content == "valid"
+        assert len(warnings) == 1
+        assert "broken" in warnings[0]
+
+    # ── merge ──
 
     def test_merge_no_blocks_is_identity(self):
         rendered = "some rendered content"
         assert merge(rendered, []) == rendered
 
-    def test_extract_then_merge_is_noop_on_unpinned(self):
+    def test_merge_unlabeled(self):
+        result = merge("body", [PinnedBlock(label=None, content="note")])
+        assert "<!-- pinned -->" in result
+        assert "note" in result
+        assert "<!-- /pinned -->" in result
+
+    def test_merge_labeled(self):
+        result = merge("body", [PinnedBlock(label="dep", content="deprecated")])
+        assert "<!-- pinned:dep -->" in result
+        assert "deprecated" in result
+
+    def test_merge_multiple_blocks_separated(self):
+        blocks = [
+            PinnedBlock(label="a", content="first"),
+            PinnedBlock(label=None, content="second"),
+        ]
+        result = merge("body", blocks)
+        assert "<!-- pinned:a -->" in result
+        assert "<!-- pinned -->" in result
+        a_pos = result.index("<!-- pinned:a -->")
+        u_pos = result.index("<!-- pinned -->")
+        assert a_pos < u_pos
+
+    def test_extract_then_merge_roundtrip(self):
         text = "just plain text with no pinned blocks"
-        blocks = extract(text)
+        blocks, _ = extract(text)
         result = merge(text, blocks)
         assert result == text
+
+    def test_labeled_roundtrip(self):
+        original = "body\n\n<!-- pinned:note -->\nmy note\n<!-- /pinned -->\n"
+        blocks, _ = extract(original)
+        result = merge("body", blocks)
+        blocks2, _ = extract(result)
+        assert len(blocks2) == 1
+        assert blocks2[0].label == "note"
+        assert blocks2[0].content == "my note"
 
 
 class TestTemplates:
@@ -369,6 +514,106 @@ class TestMaterializeView:
         store._commit = "ccdd"
         second = materialize_view(spec, store, tmp_path, MaterializerConfig())
         assert len(second) == 1
+
+
+class TestPinnedBlockIntegration:
+    """Full round-trip: materialize → hand-edit pinned → re-materialize → survives."""
+
+    def _materialize_scope(self, tmp_path, store=None, commit="aabb"):
+        scope = ScopePath(Path("src"))
+        scope_dir = tmp_path / "src"
+        scope_dir.mkdir(exist_ok=True)
+        (scope_dir / "main.py").write_text("code")
+        if store is None:
+            store = _FakeStore(commit=commit)
+        written = materialize(scope, store, tmp_path, MaterializerConfig())
+        return scope, scope_dir, store, written
+
+    def test_pinned_block_survives_regeneration(self, tmp_path):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(original.rstrip() + "\n\n<!-- pinned -->\nHuman note.\n<!-- /pinned -->\n")
+        store._commit = "bbcc"
+        written = materialize(scope, store, tmp_path, MaterializerConfig())
+        assert len(written) > 0
+        text = agents.read_text()
+        assert "Human note." in text
+        assert "<!-- pinned -->" in text
+
+    def test_labeled_block_survives_regeneration(self, tmp_path):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(
+            original.rstrip()
+            + "\n\n<!-- pinned:deprecation -->\nThis module is deprecated.\n<!-- /pinned -->\n"
+        )
+        store._commit = "bbcc"
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        text = agents.read_text()
+        assert "<!-- pinned:deprecation -->" in text
+        assert "This module is deprecated." in text
+
+    def test_multiple_labeled_blocks_survive(self, tmp_path):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(
+            original.rstrip()
+            + "\n\n<!-- pinned:note1 -->\nFirst.\n<!-- /pinned -->"
+            + "\n\n<!-- pinned:note2 -->\nSecond.\n<!-- /pinned -->\n"
+        )
+        store._commit = "bbcc"
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        text = agents.read_text()
+        assert "<!-- pinned:note1 -->" in text
+        assert "First." in text
+        assert "<!-- pinned:note2 -->" in text
+        assert "Second." in text
+        pos1 = text.index("<!-- pinned:note1 -->")
+        pos2 = text.index("<!-- pinned:note2 -->")
+        assert pos1 < pos2
+
+    def test_duplicate_labels_deduped_on_regeneration(self, tmp_path):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(
+            original.rstrip()
+            + "\n\n<!-- pinned:dup -->\nold\n<!-- /pinned -->"
+            + "\n\n<!-- pinned:dup -->\nnew\n<!-- /pinned -->\n"
+        )
+        store._commit = "bbcc"
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        text = agents.read_text()
+        assert text.count("<!-- pinned:dup -->") == 1
+        assert "new" in text
+        assert "old" not in text.split("<!-- pinned:dup -->")[1]
+
+    def test_pinned_blocks_survive_summary_change(self, tmp_path):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(
+            original.rstrip() + "\n\n<!-- pinned -->\nKeep me.\n<!-- /pinned -->\n"
+        )
+        store._commit = "ccdd"
+        store._summary_md = "Completely new summary content."
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        text = agents.read_text()
+        assert "Completely new summary content." in text
+        assert "Keep me." in text
+
+    def test_malformed_block_warns(self, tmp_path, capsys):
+        scope, scope_dir, store, _ = self._materialize_scope(tmp_path)
+        agents = scope_dir / "AGENTS.md"
+        original = agents.read_text()
+        agents.write_text(original.rstrip() + "\n\n<!-- pinned -->\nOrphan content\n")
+        store._commit = "bbcc"
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        captured = capsys.readouterr()
+        assert "Unpaired" in captured.err
 
 
 class TestIngestPersistsScopeEntities:

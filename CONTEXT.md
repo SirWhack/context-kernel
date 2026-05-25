@@ -55,8 +55,8 @@ A materialized file under `.context-kernel/views/` that aggregates information a
 _Avoid_: "report" (implies one-off generation); "dashboard" (implies live state).
 
 **Pinned block**:
-A `<!-- pinned -->`-wrapped section inside a materialized file whose contents survive the next regeneration and feed into the next materialization prompt; the only place free-form human input persists.
-_Avoid_: (to be sharpened via /grill-with-docs)
+A `<!-- pinned -->` / `<!-- pinned:label -->`-wrapped section inside a per-scope materialized file (`AGENTS.md`) whose contents survive regeneration. The highest-quality data in the system — deliberately authored human context that the kernel preserves with the same care as graph state. Represented internally as `PinnedBlock(label, content)`; rendered as markdown but tracked as structured data. Labels are optional but provide identity for dedup and future positional anchoring. Not supported in cross-cutting views (views are pure projections with no side inputs).
+_Avoid_: "annotation" (too generic); "comment" (implies non-functional).
 
 ### Pipeline and safety
 

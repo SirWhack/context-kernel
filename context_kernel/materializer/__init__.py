@@ -8,6 +8,8 @@ from context_kernel.graph.protocol import KnowledgeStore
 from context_kernel.ingester.change_detection import source_tree_hash
 from context_kernel.materializer.errors import MaterializationError
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
+import sys
+
 from context_kernel.materializer.pinned import extract, merge
 from context_kernel.materializer.templates import render_agents_md, render_claude_md_bridge
 from context_kernel.materializer.views import render_view
@@ -51,9 +53,11 @@ def materialize(
                 written.append(claude_path)
             return written
 
-    pinned_blocks: list[str] = []
+    pinned_blocks = []
     if agents_path.exists():
-        pinned_blocks = extract(agents_path.read_text(encoding="utf-8"))
+        pinned_blocks, pinned_warnings = extract(agents_path.read_text(encoding="utf-8"))
+        for w in pinned_warnings:
+            print(f"warning: {scope}: {w}", file=sys.stderr)
 
     header = FreshnessHeader(
         graph_commit=gc,
