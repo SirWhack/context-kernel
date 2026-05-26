@@ -261,7 +261,7 @@ The app is entirely read-only. No write permissions required.
 
 **Rate limits**: 5,000 API requests/hour per installation (15K for GitHub Enterprise Cloud). A 500-file repo needs ~501 calls (1 tree + 500 file reads) — well within limits.
 
-**Webhook security**: Verify `X-Hub-Signature-256` header (HMAC-SHA256 of raw body with webhook secret).
+**Webhook security**: Verify `X-Hub-Signature-256` header (HMAC-SHA256 of raw body with webhook secret). Note: GitHub does **not** automatically retry failed webhook deliveries. If your endpoint returns non-2xx or times out (10-second limit), you must redeliver manually via `GET /app/hook/deliveries` + `POST /app/hook/deliveries/{id}/attempts`. Failed deliveries are available for 3 days.
 
 ### Lifecycle Events
 
@@ -300,7 +300,7 @@ The app is entirely read-only. No write permissions required.
 
 ### GitHub Marketplace Distribution
 
-- **Fees**: 0% commission (GitHub eliminated the 25% cut in 2024)
+- **Fees**: 5% commission (GitHub reduced from 25% in 2021)
 - **Pricing models**: Per-unit (seats), flat-rate, or metered billing
 - **Metered billing**: Charge based on repos processed, queries served, or storage used
 - **Provides**: Billing, invoicing, license management, discovery
