@@ -10,7 +10,7 @@ Produced by `/grill-build-plan` on 2026-05-23.
 
 ### Demo
 
-On the 7900 XTX, Sam runs `ck ingest && ck materialize` against a portfolio root containing **two real projects** (likely `~/Code/model-time/` itself plus one other) — source code, markdown docs, and at least one PDF among them. He then opens Claude Code at the portfolio root. The agent loads the materialized `AGENTS.md` tree (each scope's `CLAUDE.md` `@AGENTS.md` bridge auto-imports it per [ADR-0002](./docs/adr/0002-materialize-agents-md-with-claude-code-bridge.md)), and answers a cross-project orientation question via the MCP `find` tool — the response cites materialized scopes from **both** projects with file-path pointers the agent follows for full depth. Sam then edits `THEORY.md` in one of the projects; on the agent's next read of that scope's `AGENTS.md`, the `PreToolUse` FreshnessGate hook silently triggers re-materialization before the read returns, and `.context-kernel/log.md` records the regen chain. First-read latency on a cold scope of ~50–200 files stays under the 60s threshold (per `THEORY.md` open question 3 and `ARCHITECTURE.md` §7).
+On the 7900 XTX, Sam runs `ck ingest && ck materialize --all` against a portfolio root containing **two real projects** (≥1 Python, ≥1 TS/JS) — source code and markdown docs. He then opens Claude Code at the portfolio root. The agent loads the materialized `AGENTS.md` tree (each scope's `CLAUDE.md` `@AGENTS.md` bridge auto-imports it per [ADR-0002](./docs/adr/0002-materialize-agents-md-with-claude-code-bridge.md)), and answers a cross-project orientation question via the MCP `find` tool — the response cites materialized scopes from **both** projects with file-path pointers the agent follows for full depth. Sam then edits a source file in one project and runs `git commit`; the pre-commit hook fires `ck ingest && ck materialize --all`, the materialized files for that scope update, and changed files are staged automatically. `.context-kernel/log.md` records the invocation, and each per-project ingest shows `duration_ms` < 60000 (per `ARCHITECTURE.md` §7).
 
 ### Scope
 
@@ -69,7 +69,7 @@ To be filled by `/grill-backlog` after v1 ships (or partway, once priorities sta
 
 - **MVP:** Not applicable — thesis accepted, build-mode. v1 release at S10.
 - **Last reviewed:** 2026-05-24
-- **Slices completed:** 1 of 13. S0 GO — see [spike/results.md](./spike/results.md).
-- **Active specs:** [S1 — Walking skeleton](./docs/slices/S1.md) (phase-1 complete; phase-2 LightRAG-dependent modules unblocked by S0). [S2 — Pre-commit hook](./docs/slices/S2.md) (spec complete, ready to build). [S3 — Python AST handler + ingest orchestration](./docs/slices/S3.md) (spec complete, ready to build). [S4 — TypeScript/JS handler](./docs/slices/S4.md) (complete). [S5 — OrientationServer find](./docs/slices/S5.md) (complete). [S6 — Cross-cutting views](./docs/slices/S6.md) (complete). [S7 — Pinned-block merge](./docs/slices/S7.md) (complete). [S8 — Harden observability + OperationalJournal](./docs/slices/S8.md) (complete). [S9 — Wire cross-project ingest](./docs/slices/S9.md) (complete).
+- **Slices completed:** 10 of 13. S0 GO — see [spike/results.md](./spike/results.md). S1–S9 complete.
+- **Active specs:** [S10 — Cross-project dogfood demo](./docs/slices/S10.md) (spec complete, ready to demo).
 - **S0 winner:** Qwen3-30B-A3B-Instruct-2507 Q4_K_M (94 tok/s, 2 format warnings, 38.3% cross-scope density, 9.9s first-read latency). Qwen3.6-MTP is the speed option. See [docs/slices/S0.md](./docs/slices/S0.md).
 - **Code:** `/scaffold-modules` output landed (`context_kernel/` + `tests/` + `pyproject.toml`); no implementation bodies yet.
