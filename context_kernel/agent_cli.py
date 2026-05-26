@@ -118,6 +118,7 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester import ingest
     from context_kernel.ingester.embedder import HttpEmbedder
+    from context_kernel.ingester.summarizer import LLMSummarizer
 
     portfolio = args.portfolio.resolve()
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
@@ -126,12 +127,17 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
         model=config.ingester.embedder_model,
         dim=config.ingester.embedder_dim,
     )
+    summarizer = LLMSummarizer(
+        endpoint=config.ingester.summarizer_endpoint,
+        model=config.ingester.summarizer_model,
+    )
     commit = None
     for project in config.projects:
         project_name = None if project.path == Path(".") else project.name
         commit = ingest(
             store, portfolio / project.path, portfolio, config.ingester,
             project_name=project_name,
+            summarizer=summarizer,
             embedder=embedder,
         )
     return str(commit)
