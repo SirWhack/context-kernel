@@ -47,7 +47,13 @@ def main(argv: list[str] | None = None) -> int:
     """Parse args; dispatch to `ingest` / `materialize` / `check` / `mcp`. Return a structured exit code."""
     parser = _build_parser()
     args = parser.parse_args(argv)
-    config = load_config(getattr(args, "config", None))
+    config_path = getattr(args, "config", None)
+    if config_path is None:
+        portfolio = getattr(args, "portfolio", Path(".")).resolve()
+        auto = portfolio / ".context-kernel" / "config.toml"
+        if auto.exists():
+            config_path = auto
+    config = load_config(config_path)
 
     configure_logging()
     inv_id = uuid4()
@@ -111,15 +117,22 @@ def _cmd_init(args: argparse.Namespace) -> int:
 def _cmd_ingest(args: argparse.Namespace, config) -> str:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester import ingest
+    from context_kernel.ingester.embedder import HttpEmbedder
 
     portfolio = args.portfolio.resolve()
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    embedder = HttpEmbedder(
+        endpoint=config.ingester.embedder_endpoint,
+        model=config.ingester.embedder_model,
+        dim=config.ingester.embedder_dim,
+    )
     commit = None
     for project in config.projects:
         project_name = None if project.path == Path(".") else project.name
         commit = ingest(
             store, portfolio / project.path, portfolio, config.ingester,
             project_name=project_name,
+            embedder=embedder,
         )
     return str(commit)
 
@@ -168,11 +181,17 @@ def _cmd_check(args: argparse.Namespace, config) -> None:
 
 def _cmd_mcp(args: argparse.Namespace, config) -> None:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
+    from context_kernel.ingester.embedder import HttpEmbedder
     from context_kernel.orientation_server import serve
 
     portfolio = config.portfolio_root
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
-    serve(portfolio, store, config.orientation)
+    embedder = HttpEmbedder(
+        endpoint=config.ingester.embedder_endpoint,
+        model=config.ingester.embedder_model,
+        dim=config.ingester.embedder_dim,
+    )
+    serve(portfolio, store, config.orientation, embedder=embedder)
 
 
 if __name__ == "__main__":
