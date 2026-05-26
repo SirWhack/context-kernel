@@ -215,6 +215,114 @@ This gives you the best of Cloudflare's MCP/edge story without hitting the D1/Ve
 3. **Is Gemini Flash-Lite good enough for entity extraction?** If yes, GCP becomes the cheapest option ($0.10/M input tokens vs $0.051/M on Workers AI).
 4. **What's the MCP client support landscape?** Streamable HTTP is the spec standard, but which agents actually support remote MCP servers with OAuth today?
 
+## GitHub App + MCP Auth Integration
+
+### The Pairing Model
+
+The GitHub App and MCP server share a single identity chain. The user installs the GitHub App (granting read access to repos), then adds the MCP server to their coding agent. The MCP OAuth login delegates to GitHub OAuth ("Login with GitHub"), which maps the user to their installation(s) and scopes all MCP queries to those repos.
+
+**One shared MCP endpoint** (`mcp.contextkernel.dev`) with auth-based routing — not per-tenant URLs.
+
+### Identity Chain
+
+```
+GitHub App Install
+  → installation_id = tenant_id
+  → installation token (server-to-server, 1hr expiry, 5K req/hr)
+  → used to read repo contents via GitHub API
+
+MCP Connection (user-facing)
+  → MCP client discovers OAuth at /.well-known/oauth-authorization-server
+  → redirects to your /authorize → "Login with GitHub" (GitHub OAuth)
+  → your server maps GitHub user → installation(s) → repos
+  → issues MCP access token with claims: { installation_id, repos[], scope }
+  → MCP client stores token, includes on all requests
+  → token refreshes transparently via refresh_token
+```
+
+The MCP server is the OAuth authorization server. GitHub OAuth is the upstream identity provider. The MCP client never talks to GitHub directly.
+
+### GitHub App Permissions (Read-Only)
+
+| Permission | Level | Why |
+|---|---|---|
+| `contents` | `read` | Read repo files via Contents API |
+| `metadata` | `read` | Required for all GitHub Apps (implicit) |
+
+**Webhook subscriptions:** `push`, `installation`, `installation_repositories`
+
+The app is entirely read-only. No write permissions required.
+
+### Webhook → Ingestion Pipeline
+
+**`push` event**: Payload includes `commits[].added`, `commits[].removed`, `commits[].modified` — the exact file diff. Enables incremental ingestion (only re-process changed files). GitHub retries failed deliveries 3 times over ~6 hours. Webhook endpoint must respond within 10 seconds (ack immediately, process async via queue).
+
+**Reading files**: Use Contents API with installation token (`GET /repos/{owner}/{repo}/contents/{path}`). Max 1MB per file via Contents API; use Git Blobs API for files up to 100MB. Full tree listing in one call via `GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1`.
+
+**Rate limits**: 5,000 API requests/hour per installation (15K for GitHub Enterprise Cloud). A 500-file repo needs ~501 calls (1 tree + 500 file reads) — well within limits.
+
+**Webhook security**: Verify `X-Hub-Signature-256` header (HMAC-SHA256 of raw body with webhook secret).
+
+### Lifecycle Events
+
+| Event | Trigger | Action |
+|---|---|---|
+| `installation` (created) | User installs app | Create tenant, queue initial full ingest of selected repos |
+| `push` | Code pushed to any branch | Queue incremental ingest (changed files only) |
+| `installation_repositories` (added) | User adds repos to installation | Queue full ingest of new repos |
+| `installation_repositories` (removed) | User removes repos | Delete repo data from tenant's graph |
+| `installation` (deleted) | User uninstalls app | Delete all tenant data (graph, vectors, config) |
+
+### User Experience
+
+**Setup (one-time):**
+1. User visits `github.com/apps/context-kernel/installations/new`
+2. Selects org/account, chooses repos (all or selected)
+3. App starts ingesting in the background
+4. User adds MCP server to their coding agent:
+   ```json
+   {
+     "mcpServers": {
+       "context-kernel": {
+         "type": "url",
+         "url": "https://mcp.contextkernel.dev/sse"
+       }
+     }
+   }
+   ```
+5. First MCP call triggers OAuth → browser opens → "Login with GitHub" → done
+6. All subsequent calls authenticated automatically (token refresh is transparent)
+
+**Ongoing:**
+- Every `git push` triggers a webhook → incremental re-ingest → graph updated
+- Agent queries (`overview`, `find`) return fresh results scoped to that user's repos
+- User can add/remove repos from the GitHub App settings page — graph updates accordingly
+
+### GitHub Marketplace Distribution
+
+- **Fees**: 0% commission (GitHub eliminated the 25% cut in 2024)
+- **Pricing models**: Per-unit (seats), flat-rate, or metered billing
+- **Metered billing**: Charge based on repos processed, queries served, or storage used
+- **Provides**: Billing, invoicing, license management, discovery
+- **Free tier**: Can offer a free plan with limits (e.g., 1 repo, 100 queries/day)
+
+### Cloudflare Implementation
+
+On Cloudflare, the pairing uses:
+- **`workers-oauth-provider`** package for the OAuth authorization server
+- **`McpAgent`** Durable Object for per-tenant MCP sessions with WebSocket hibernation
+- GitHub OAuth as the upstream identity provider (plug into the `authorize` handler)
+- Token claims carry `installation_id` → route to tenant's D1 database / Vectorize namespace
+
+### Cost of the GitHub App Layer
+
+The GitHub App itself is free to create and operate. Costs are:
+- Webhook receiving: handled by the same Workers/Queue infrastructure already priced above
+- API calls (reading repo contents): free (GitHub doesn't charge for API use within rate limits)
+- Marketplace listing: free (0% commission)
+
+**The GitHub App adds zero marginal cost to the stack.**
+
 ## Sources
 
 - [Cloudflare Workers AI Models](https://developers.cloudflare.com/workers-ai/models/)
