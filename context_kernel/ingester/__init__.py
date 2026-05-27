@@ -20,12 +20,12 @@ from context_kernel.ingester.handlers import (
     StructuredHandler,
     TypeScriptHandler,
 )
+from context_kernel.ingester.summarizer import Summarizer
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 
 if TYPE_CHECKING:
     from context_kernel.config_store import IngesterConfig
     from context_kernel.ingester.embedder import Embedder
-    from context_kernel.ingester.summarizer import Summarizer
 
 __all__ = ["IngestionError", "ingest"]
 
@@ -112,7 +112,7 @@ def ingest(
     config: "IngesterConfig",
     *,
     project_name: str | None = None,
-    summarizer: "Summarizer | None" = None,
+    summarizer: Summarizer | None = None,
     embedder: "Embedder | None" = None,
 ) -> GraphCommit:
     """Detect changed sources, extract entities, upsert into Graph. Return the new GraphCommit."""
@@ -170,8 +170,8 @@ def ingest(
                 for chunk in chunks:
                     raw_ents, raw_rels = summarizer.summarize(chunk)
                     entities, relationships = _resolve_raw_entities(
-                        [RawEntity(name=e.name, kind=e.kind, description=e.description) for e in raw_ents],
-                        [RawRelationship(source_name=r.source_id, target_name=r.target_id, kind=r.kind, description=r.description) for r in raw_rels],
+                        raw_ents,
+                        raw_rels,
                         rel_path,
                         project_name,
                     )

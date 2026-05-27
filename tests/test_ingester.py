@@ -20,6 +20,7 @@ from context_kernel.ingester.handlers import (
     RawRelationship,
     TypeScriptHandler,
 )
+from context_kernel.ingester.summarizer import _parse_llm_response
 from context_kernel.config_store import IngesterConfig
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 
@@ -534,26 +535,143 @@ class TestMarkdownHandler:
         assert not h.supports(tmp_path / "main.py")
         assert not h.supports(tmp_path / "style.css")
 
-    def test_chunks_small_file(self, tmp_path):
-        f = tmp_path / "small.md"
-        f.write_text("# Hello\n\nShort content.")
-        h = MarkdownHandler()
-        chunks = h.chunks(f)
-        assert len(chunks) == 1
-        assert "Hello" in chunks[0]
-
     def test_chunks_empty_file(self, tmp_path):
         f = tmp_path / "empty.md"
         f.write_text("")
         h = MarkdownHandler()
         assert h.chunks(f) == []
 
-    def test_chunks_large_file(self, tmp_path):
+    def test_single_heading_section(self, tmp_path):
+        f = tmp_path / "simple.md"
+        f.write_text("# Title\n\nSome content here.")
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        assert len(chunks) == 1
+        assert "Some content here." in chunks[0]
+
+    def test_heading_path_in_chunks(self, tmp_path):
+        f = tmp_path / "nested.md"
+        f.write_text(
+            "# Top\n\nIntro.\n\n"
+            "## Section A\n\nContent A.\n\n"
+            "### Subsection A1\n\nDeep content.\n"
+        )
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        assert len(chunks) == 3
+        assert "[heading: Top]" in chunks[0]
+        assert "[heading: Top > Section A]" in chunks[1]
+        assert "[heading: Top > Section A > Subsection A1]" in chunks[2]
+
+    def test_preamble_before_first_heading(self, tmp_path):
+        f = tmp_path / "preamble.md"
+        f.write_text("Some preamble text.\n\n# Heading\n\nBody.")
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        assert len(chunks) == 2
+        assert "preamble" in chunks[0]
+        assert "[heading:" not in chunks[0]
+
+    def test_multiple_headings_same_level(self, tmp_path):
+        f = tmp_path / "flat.md"
+        f.write_text(
+            "# Doc\n\n"
+            "## Alpha\n\nAlpha content.\n\n"
+            "## Beta\n\nBeta content.\n"
+        )
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        alpha_chunks = [c for c in chunks if "Alpha content" in c]
+        beta_chunks = [c for c in chunks if "Beta content" in c]
+        assert len(alpha_chunks) == 1
+        assert len(beta_chunks) == 1
+        assert "[heading: Doc > Alpha]" in alpha_chunks[0]
+        assert "[heading: Doc > Beta]" in beta_chunks[0]
+
+    def test_oversized_section_splits(self, tmp_path):
         f = tmp_path / "big.md"
-        f.write_text("word " * 1000)
+        f.write_text("# Big\n\n" + "word " * 1000)
         h = MarkdownHandler()
         chunks = h.chunks(f)
         assert len(chunks) > 1
+
+    def test_no_headings_produces_single_chunk(self, tmp_path):
+        f = tmp_path / "plain.md"
+        f.write_text("Just some plain text without any headings.")
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        assert len(chunks) == 1
+        assert "plain text" in chunks[0]
+
+    def test_heading_level_skip(self, tmp_path):
+        f = tmp_path / "skip.md"
+        f.write_text(
+            "# Top\n\n"
+            "### Deep\n\nSkipped H2.\n"
+        )
+        h = MarkdownHandler()
+        chunks = h.chunks(f)
+        deep_chunks = [c for c in chunks if "Skipped H2" in c]
+        assert len(deep_chunks) == 1
+        assert "[heading: Top > Deep]" in deep_chunks[0]
+
+
+# ── Summarizer response parsing ───────────────────────────────────────
+
+
+class TestSummarizerParsing:
+    def test_valid_json(self):
+        raw = '{"entities": [{"name": "pre-commit hook", "kind": "workflow", "description": "Runs ck ingest before commit"}], "relationships": []}'
+        ents, rels = _parse_llm_response(raw)
+        assert len(ents) == 1
+        assert ents[0].name == "pre-commit hook"
+        assert ents[0].kind == "workflow"
+        assert rels == []
+
+    def test_strips_markdown_fences(self):
+        raw = '```json\n{"entities": [{"name": "X", "kind": "decision", "description": "D"}], "relationships": []}\n```'
+        ents, _ = _parse_llm_response(raw)
+        assert len(ents) == 1
+        assert ents[0].name == "X"
+
+    def test_invalid_json_returns_empty(self):
+        ents, rels = _parse_llm_response("not json at all")
+        assert ents == []
+        assert rels == []
+
+    def test_missing_name_skipped(self):
+        raw = '{"entities": [{"name": "", "kind": "decision", "description": "D"}], "relationships": []}'
+        ents, _ = _parse_llm_response(raw)
+        assert ents == []
+
+    def test_relationships_parsed(self):
+        raw = '{"entities": [], "relationships": [{"source_name": "A", "target_name": "B", "kind": "motivates", "description": "A motivates B"}]}'
+        _, rels = _parse_llm_response(raw)
+        assert len(rels) == 1
+        assert rels[0].source_name == "A"
+        assert rels[0].target_name == "B"
+        assert rels[0].kind == "motivates"
+
+    def test_empty_response(self):
+        raw = '{"entities": [], "relationships": []}'
+        ents, rels = _parse_llm_response(raw)
+        assert ents == []
+        assert rels == []
+
+    def test_multiple_entities_and_relationships(self):
+        raw = """{
+            "entities": [
+                {"name": "graph is source of truth", "kind": "invariant", "description": "All materialized files derived from graph"},
+                {"name": "no cloud LLM", "kind": "constraint", "description": "All inference runs locally on 7900 XTX"}
+            ],
+            "relationships": [
+                {"source_name": "no cloud LLM", "target_name": "local Qwen3 selection", "kind": "motivates", "description": "Constraint drives model choice"}
+            ]
+        }"""
+        ents, rels = _parse_llm_response(raw)
+        assert len(ents) == 2
+        assert {e.kind for e in ents} == {"invariant", "constraint"}
+        assert len(rels) == 1
 
 
 # ── Change Detection ────────────────────────────────────────────────────
@@ -808,6 +926,14 @@ class TestIngestPython:
         assert store.entities == []
 
 
+class _FakeSummarizer:
+    """Mock summarizer that returns canned entities for any chunk."""
+
+    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
+        entities = [RawEntity(name="mock-entity", kind="decision", description=f"Extracted from: {text[:50]}")]
+        return entities, []
+
+
 class TestIngestMarkdownWithoutSummarizer:
     def test_skips_md_without_summarizer(self, tmp_path):
         (tmp_path / "README.md").write_text("# Hello\n\nContent.")
@@ -823,6 +949,35 @@ class TestIngestMarkdownWithoutSummarizer:
         ingest(store, tmp_path, tmp_path, IngesterConfig())
         names = {e.name for e in store.entities}
         assert "App" in names
+
+
+class TestIngestMarkdownWithSummarizer:
+    def test_md_produces_entities_with_summarizer(self, tmp_path):
+        (tmp_path / "design.md").write_text("# Design\n\n## Invariants\n\nGraph is source of truth.\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_FakeSummarizer())
+        assert len(store.entities) >= 1
+        assert any(e.kind == "decision" for e in store.entities)
+
+    def test_heading_context_reaches_summarizer(self, tmp_path):
+        (tmp_path / "theory.md").write_text(
+            "# Theory\n\n"
+            "## Thesis\n\nWe believe graphs compose context.\n\n"
+            "## Non-goals\n\nNo cloud fallback.\n"
+        )
+        store = _FakeStore()
+        summarizer = _FakeSummarizer()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=summarizer)
+        assert len(store.entities) >= 2
+
+    def test_md_and_py_together_with_summarizer(self, tmp_path):
+        (tmp_path / "design.md").write_text("# Design\n\nSome design context.\n")
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_FakeSummarizer())
+        names = {e.name for e in store.entities}
+        assert "App" in names
+        assert "mock-entity" in names
 
 
 class TestIngestMixedSources:

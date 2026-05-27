@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,11 +56,80 @@ class StructuredHandler(Protocol):
 # ── Markdown (ChunkHandler) ─────────────────────────────────────────────
 
 _CHUNK_SIZE = 1500
-_CHUNK_OVERLAP = 200
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class _HeadingNode:
+    level: int
+    title: str
+    body: str
+
+
+def _parse_heading_tree(text: str) -> list[_HeadingNode]:
+    """Split markdown into sections keyed by heading, preserving order."""
+    matches = list(_HEADING_RE.finditer(text))
+    if not matches:
+        return [_HeadingNode(level=0, title="", body=text.strip())] if text.strip() else []
+
+    nodes: list[_HeadingNode] = []
+    preamble = text[: matches[0].start()].strip()
+    if preamble:
+        nodes.append(_HeadingNode(level=0, title="", body=preamble))
+
+    for i, m in enumerate(matches):
+        level = len(m.group(1))
+        title = m.group(2).strip()
+        body_start = m.end()
+        body_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body = text[body_start:body_end].strip()
+        nodes.append(_HeadingNode(level=level, title=title, body=body))
+
+    return nodes
+
+
+def _build_heading_path(nodes: list[_HeadingNode], index: int) -> str:
+    """Walk backwards to build the heading ancestry path for a node."""
+    target = nodes[index]
+    if target.level == 0:
+        return ""
+    path_parts: list[str] = [target.title]
+    target_level = target.level
+    for j in range(index - 1, -1, -1):
+        if nodes[j].level > 0 and nodes[j].level < target_level:
+            path_parts.append(nodes[j].title)
+            target_level = nodes[j].level
+            if target_level == 1:
+                break
+    path_parts.reverse()
+    return " > ".join(path_parts)
+
+
+def _split_oversized(text: str, max_size: int) -> list[str]:
+    """Split text that exceeds max_size at sentence/line boundaries."""
+    if len(text) <= max_size:
+        return [text]
+    result: list[str] = []
+    start = 0
+    while start < len(text):
+        end = start + max_size
+        if end < len(text):
+            for sep in ("\n\n", "\n", ". ", " "):
+                pos = text.rfind(sep, start, end)
+                if pos > start:
+                    end = pos + len(sep)
+                    break
+        result.append(text[start:end].strip())
+        start = end
+    return [r for r in result if r]
 
 
 class MarkdownHandler:
-    """v1 source handler for markdown files."""
+    """Heading-aware source handler for markdown files.
+
+    Splits on markdown headings and prepends the heading path as context
+    so the Summarizer knows where each chunk sits in the document tree.
+    """
 
     def supports(self, path: Path) -> bool:
         return path.suffix.lower() in {".md", ".markdown"}
@@ -68,18 +138,29 @@ class MarkdownHandler:
         text = path.read_text(encoding="utf-8", errors="replace")
         if not text.strip():
             return []
-        if len(text) <= _CHUNK_SIZE:
-            return [text]
+
+        nodes = _parse_heading_tree(text)
+        if not nodes:
+            return []
+
         result: list[str] = []
-        start = 0
-        while start < len(text):
-            end = start + _CHUNK_SIZE
-            if end < len(text):
-                nl = text.rfind("\n", start, end)
-                if nl > start:
-                    end = nl + 1
-            result.append(text[start:end])
-            start = end - _CHUNK_OVERLAP if end < len(text) else end
+        for i, node in enumerate(nodes):
+            if not node.body and not node.title:
+                continue
+
+            heading_path = _build_heading_path(nodes, i)
+            prefix = f"[heading: {heading_path}]\n\n" if heading_path else ""
+            section_text = prefix + node.body if node.body else prefix + node.title
+
+            if not section_text.strip():
+                continue
+
+            if len(section_text) <= _CHUNK_SIZE:
+                result.append(section_text)
+            else:
+                for sub in _split_oversized(section_text, _CHUNK_SIZE):
+                    result.append(sub)
+
         return result
 
 
