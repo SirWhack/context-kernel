@@ -57,7 +57,12 @@ def materialize(
         existing_header = parse(existing)
         if existing_header and existing_header.graph_commit == gc and existing_header.source_tree_hash == sth:
             written: list[Path] = []
-            if _write_if_changed(claude_path, render_claude_md_bridge()):
+            claude_rendered = render_claude_md_bridge()
+            if claude_path.exists():
+                claude_pinned, _ = extract(claude_path.read_text(encoding="utf-8"))
+                if claude_pinned:
+                    claude_rendered = merge(claude_rendered, claude_pinned)
+            if _write_if_changed(claude_path, claude_rendered):
                 written.append(claude_path)
             return written
 
@@ -94,7 +99,13 @@ def materialize(
     written: list[Path] = []
     if _write_if_changed(agents_path, rendered):
         written.append(agents_path)
-    if _write_if_changed(claude_path, render_claude_md_bridge()):
+
+    claude_rendered = render_claude_md_bridge()
+    if claude_path.exists():
+        claude_pinned, _ = extract(claude_path.read_text(encoding="utf-8"))
+        if claude_pinned:
+            claude_rendered = merge(claude_rendered, claude_pinned)
+    if _write_if_changed(claude_path, claude_rendered):
         written.append(claude_path)
 
     if written:

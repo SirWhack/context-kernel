@@ -8,14 +8,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from context_kernel.ingester.handlers import RawEntity, RawRelationship
 
+if TYPE_CHECKING:
+    from context_kernel.types import LLMMetrics
+
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = "v1"
+_CACHE_VERSION = "v2"
 
 # Entity kinds the LLM is instructed to extract from documentation.
 # See ADR-0013 for rationale on why these 8 and what was cut.
@@ -150,21 +154,31 @@ that helps an agent or engineer understand:
 """
 
 
-def _cache_key(text: str) -> str:
-    return hashlib.sha256(f"{_CACHE_VERSION}:{text}".encode()).hexdigest()
+def _cache_key(text: str, model: str) -> str:
+    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{text}".encode()).hexdigest()
 
 
 class LLMSummarizer:
-    """Concrete Summarizer that calls a local OpenAI-compatible LLM endpoint.
+    """Concrete Summarizer that calls an OpenAI-compatible LLM endpoint.
 
-    Caches entity extraction results per chunk (content-addressed) to avoid
-    redundant LLM calls on re-ingest of unchanged files.
+    Caches entity extraction results per chunk (content-addressed, model-aware)
+    to avoid redundant LLM calls on re-ingest of unchanged files.
     """
 
-    def __init__(self, endpoint: str, model: str, cache_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        model: str,
+        cache_dir: Path | None = None,
+        *,
+        api_key: str | None = None,
+        metrics: "LLMMetrics | None" = None,
+    ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._model = model
         self._cache_dir = cache_dir
+        self._api_key = api_key
+        self._metrics = metrics
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_hits = 0
@@ -176,7 +190,7 @@ class LLMSummarizer:
         return self._cache_dir / f"{key}.json"
 
     def _read_cache(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]] | None:
-        path = self._cache_path(_cache_key(text))
+        path = self._cache_path(_cache_key(text, self._model))
         if path is None or not path.exists():
             return None
         try:
@@ -188,7 +202,7 @@ class LLMSummarizer:
             return None
 
     def _write_cache(self, text: str, entities: list[RawEntity], relationships: list[RawRelationship]) -> None:
-        path = self._cache_path(_cache_key(text))
+        path = self._cache_path(_cache_key(text, self._model))
         if path is None:
             return
         data = {
@@ -200,22 +214,60 @@ class LLMSummarizer:
     def _chat(self, system: str, user: str, max_tokens: int = 2048) -> str | None:
         import httpx
 
+        headers: dict[str, str] = {}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+
+        body: dict = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+        }
+
+        if self._model.startswith("deepseek"):
+            body["thinking"] = {"type": "disabled"}
+
+        t0 = time.monotonic()
         try:
             resp = httpx.post(
                 f"{self._endpoint}/chat/completions",
-                json={
-                    "model": self._model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": max_tokens,
-                },
+                json=body,
+                headers=headers or None,
                 timeout=120.0,
             )
             resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
+            data = resp.json()
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+            usage = data.get("usage", {})
+            input_tokens = usage.get("prompt_tokens", 0)
+            output_tokens = usage.get("completion_tokens", 0)
+            cache_hit_tokens = usage.get("prompt_cache_hit_tokens", 0)
+            cache_miss_tokens = usage.get("prompt_cache_miss_tokens", 0)
+
+            if self._metrics:
+                self._metrics.record_chat(
+                    input_tokens, output_tokens, elapsed_ms,
+                    cache_hit_tokens=cache_hit_tokens,
+                    cache_miss_tokens=cache_miss_tokens,
+                )
+
+            log.debug(
+                "chat_completion",
+                extra={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_hit_tokens": cache_hit_tokens,
+                    "cache_miss_tokens": cache_miss_tokens,
+                    "elapsed_ms": elapsed_ms,
+                },
+            )
+
+            return data["choices"][0]["message"]["content"]
         except Exception:
             log.warning("LLM call failed (system prompt len=%d, user len=%d)", len(system), len(user), exc_info=True)
             return None
@@ -224,9 +276,14 @@ class LLMSummarizer:
         cached = self._read_cache(text)
         if cached is not None:
             self._cache_hits += 1
+            if self._metrics:
+                self._metrics.record_cache_hit()
             return cached
 
         self._cache_misses += 1
+        if self._metrics:
+            self._metrics.record_cache_miss()
+
         content = self._chat(_SYSTEM_PROMPT, text)
         if content is None:
             return [], []

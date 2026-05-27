@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -114,23 +115,38 @@ def _cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_api_key(env_var: str) -> str | None:
+    """Read API key from the named env var, falling back to CK_API_KEY."""
+    return os.environ.get(env_var) or os.environ.get("CK_API_KEY")
+
+
 def _cmd_ingest(args: argparse.Namespace, config) -> str:
     from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester import ingest
     from context_kernel.ingester.embedder import HttpEmbedder
     from context_kernel.ingester.summarizer import LLMSummarizer
+    from context_kernel.types import LLMMetrics
 
     portfolio = args.portfolio.resolve()
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    metrics = LLMMetrics()
+
+    summarizer_key = _resolve_api_key(config.ingester.summarizer_api_key_env)
+    embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
+
     embedder = HttpEmbedder(
         endpoint=config.ingester.embedder_endpoint,
         model=config.ingester.embedder_model,
         dim=config.ingester.embedder_dim,
+        api_key=embedder_key,
+        metrics=metrics,
     )
     summarizer = LLMSummarizer(
         endpoint=config.ingester.summarizer_endpoint,
         model=config.ingester.summarizer_model,
         cache_dir=portfolio / ".context-kernel" / "cache",
+        api_key=summarizer_key,
+        metrics=metrics,
     )
     commit = None
     for project in config.projects:
@@ -140,6 +156,7 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
             project_name=project_name,
             summarizer=summarizer,
             embedder=embedder,
+            metrics=metrics,
         )
     return str(commit)
 
@@ -193,10 +210,12 @@ def _cmd_mcp(args: argparse.Namespace, config) -> None:
 
     portfolio = config.portfolio_root
     store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
     embedder = HttpEmbedder(
         endpoint=config.ingester.embedder_endpoint,
         model=config.ingester.embedder_model,
         dim=config.ingester.embedder_dim,
+        api_key=embedder_key,
     )
     serve(portfolio, store, config.orientation, embedder=embedder)
 

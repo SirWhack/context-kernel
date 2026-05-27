@@ -28,7 +28,7 @@ def check(path: Path, store: KnowledgeStore, tree_root: Path, config: "Config | 
     """Compare path's freshness header against current state; regenerate if stale; return fresh bytes."""
     from context_kernel.materializer import materialize
     from context_kernel.ingester import ingest
-    from context_kernel.config_store import MaterializerConfig
+    from context_kernel.config_store import IngesterConfig, MaterializerConfig
     from context_kernel.types import ScopePath
 
     scope = ScopePath(_scope_from_path(path, tree_root))
@@ -57,7 +57,7 @@ def check(path: Path, store: KnowledgeStore, tree_root: Path, config: "Config | 
 
     try:
         if source_tree_is_stale:
-            ingest_config = config.ingester if config else None
+            ingest_config = config.ingester if config else IngesterConfig()
             ingest(store, scope_dir, tree_root / ".context-kernel", ingest_config)
 
         mat_config = config.materializer if config else MaterializerConfig()

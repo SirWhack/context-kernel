@@ -29,6 +29,9 @@ class IngesterConfig:
     embedder_dim: int = 1024
     storage_backend: str = "networkx"
     summary_target_tokens: int = 500
+    parallel_requests: int = 1
+    summarizer_api_key_env: str = "DEEPSEEK_API_KEY"
+    embedder_api_key_env: str = "CF_WORKER_AI_TOKEN"
 
 
 @dataclass(frozen=True)
@@ -103,11 +106,16 @@ def load(config_path: Path | None = None) -> Config:
     else:
         projects = [ProjectSpec(path=Path("."))]
 
+    ingester_kwargs = {
+        k: v for k, v in ingester_raw.items()
+        if k in IngesterConfig.__dataclass_fields__
+    }
+    for key in ("summarizer_endpoint", "embedder_endpoint"):
+        if key in ingester_kwargs:
+            ingester_kwargs[key] = os.path.expandvars(ingester_kwargs[key])
+
     return Config(
-        ingester=IngesterConfig(**{
-            k: v for k, v in ingester_raw.items()
-            if k in IngesterConfig.__dataclass_fields__
-        }),
+        ingester=IngesterConfig(**ingester_kwargs),
         materializer=MaterializerConfig(
             views=views,
             gap_detection_threshold=materializer_raw.get("gap_detection_threshold", 10),

@@ -28,6 +28,7 @@ from context_kernel.types import GraphCommit, Sha256, ScopePath
 if TYPE_CHECKING:
     from context_kernel.config_store import IngesterConfig
     from context_kernel.ingester.embedder import Embedder
+    from context_kernel.types import LLMMetrics
 
 __all__ = ["IngestionError", "ingest"]
 
@@ -35,7 +36,6 @@ log = logging.getLogger(__name__)
 
 _STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
 _CHUNK: list[ChunkHandler] = [MarkdownHandler()]
-_DEFAULT_PARALLEL = 1
 
 
 @dataclass
@@ -126,11 +126,13 @@ def ingest(
     project_name: str | None = None,
     summarizer: Summarizer | None = None,
     embedder: "Embedder | None" = None,
+    metrics: "LLMMetrics | None" = None,
 ) -> GraphCommit:
     """Detect changed sources, extract entities, upsert into Graph. Return the new GraphCommit."""
     t0 = time.monotonic()
     sources_root = sources_root.resolve()
     blob_root = blob_root.resolve()
+    n_parallel = config.parallel_requests
 
     all_files = walk_source_files(sources_root)
     if not all_files:
@@ -170,6 +172,7 @@ def ingest(
                 break
 
     # Phase 1: Process structured files (instant — no LLM, no parallelism needed)
+    t_phase1 = time.monotonic()
     for file_path, rel_path, scope_key, handler in structured_files:
         raw_ents, raw_rels = handler.extract(file_path)
         if raw_ents:
@@ -180,33 +183,40 @@ def ingest(
             for entity in entities:
                 entity_source[entity.id] = rel_path
                 entity_scope[entity.id] = scope_key
+    phase1_ms = int((time.monotonic() - t_phase1) * 1000)
 
-    # Phase 2: Process chunk files (LLM-dependent — parallelized at file level)
-    def _process_chunk_file(
-        file_path: Path, rel_path: str, scope_key: str, handler: ChunkHandler,
-    ) -> _FileResult:
+    # Phase 2: Process chunk files (LLM-dependent — parallelized at chunk level)
+    t_phase2 = time.monotonic()
+
+    # Flatten all chunks across files into individual work items
+    _ChunkItem = tuple[str, str, str]  # (chunk_text, rel_path, scope_key)
+    chunk_items: list[_ChunkItem] = []
+    for file_path, rel_path, scope_key, handler in chunk_files:
+        for chunk_text in handler.chunks(file_path):
+            chunk_items.append((chunk_text, rel_path, scope_key))
+
+    def _process_chunk(item: _ChunkItem) -> _FileResult:
+        chunk_text, rel_path, scope_key = item
         result = _FileResult(rel_path=rel_path, scope_key=scope_key)
-        chunks = handler.chunks(file_path)
-        for chunk in chunks:
-            raw_ents, raw_rels = summarizer.summarize(chunk)
-            entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path, project_name)
-            result.entities.extend(entities)
-            result.relationships.extend(relationships)
+        raw_ents, raw_rels = summarizer.summarize(chunk_text)
+        entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path, project_name)
+        result.entities.extend(entities)
+        result.relationships.extend(relationships)
 
-            if embedder is not None:
-                embedding = embedder.embed(chunk)
-                write_embedding(blob_root, embedding)
+        if embedder is not None:
+            embedding = embedder.embed(chunk_text)
+            write_embedding(blob_root, embedding)
         return result
 
-    if chunk_files and summarizer is not None:
-        n_workers = min(_DEFAULT_PARALLEL, len(chunk_files))
+    if chunk_items and summarizer is not None:
+        n_workers = min(n_parallel, len(chunk_items))
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
             futures = {
-                pool.submit(_process_chunk_file, fp, rp, sk, h): (fp, rp, sk)
-                for fp, rp, sk, h in chunk_files
+                pool.submit(_process_chunk, item): item
+                for item in chunk_items
             }
             for future in as_completed(futures):
-                fp, rp, sk = futures[future]
+                item = futures[future]
                 try:
                     result = future.result()
                     all_entities.extend(result.entities)
@@ -216,31 +226,43 @@ def ingest(
                         entity_source[entity.id] = result.rel_path
                         entity_scope[entity.id] = result.scope_key
                 except Exception:
-                    log.warning("Failed to process %s, skipping", rp, exc_info=True)
+                    log.warning("Failed to process chunk from %s, skipping", item[1], exc_info=True)
     elif chunk_files:
         for file_path, rel_path, scope_key, handler in chunk_files:
             log.warning("No summarizer configured, skipping %s", rel_path)
+    phase2_ms = int((time.monotonic() - t_phase2) * 1000)
 
-    # Embed entity descriptions
-    if embedder is not None:
-        for entity in all_entities:
+    # Phase 3: Embed entity descriptions (parallelized)
+    t_phase3 = time.monotonic()
+    if embedder is not None and all_entities:
+        def _embed_entity(entity: Entity) -> EmbeddedChunk | None:
             try:
                 emb = embedder.embed(entity.description, mode="passage")
                 write_embedding(blob_root, emb)
-                all_chunks.append(EmbeddedChunk(
+                return EmbeddedChunk(
                     id=entity.id,
                     embedding=emb,
                     chunk_text=entity.description,
                     source_path=entity_source.get(entity.id, ""),
                     kind="entity",
                     scope=ScopePath(Path(entity_scope.get(entity.id, "."))),
-                ))
+                )
             except Exception:
                 log.warning("Failed to embed entity %s, skipping", entity.name)
+                return None
 
-    # Generate per-scope summaries (ADR-0007: LLM second pass when available)
+        n_workers = min(n_parallel, len(all_entities))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            for chunk in pool.map(_embed_entity, all_entities):
+                if chunk is not None:
+                    all_chunks.append(chunk)
+    phase3_ms = int((time.monotonic() - t_phase3) * 1000)
+
+    # Phase 4: Generate per-scope summaries (ADR-0007: LLM second pass when available, parallelized)
+    t_phase4 = time.monotonic()
     all_summaries: list[Summary] = []
-    for scope_key, entities in scope_entities.items():
+
+    def _process_scope(scope_key: str, entities: list[Entity]) -> tuple[Summary, EmbeddedChunk | None]:
         scope = ScopePath(Path(scope_key))
         summary_text = None
 
@@ -253,22 +275,43 @@ def ingest(
             summary_text = _generate_scope_summary(scope, entities)
 
         digest = write_summary(blob_root, summary_text)
-        all_summaries.append(Summary(scope=scope, digest=digest, markdown=summary_text))
+        summary = Summary(scope=scope, digest=digest, markdown=summary_text)
 
+        chunk = None
         if embedder is not None:
             try:
                 emb = embedder.embed(summary_text, mode="passage")
                 write_embedding(blob_root, emb)
-                all_chunks.append(EmbeddedChunk(
+                chunk = EmbeddedChunk(
                     id=digest,
                     embedding=emb,
                     chunk_text=summary_text,
                     source_path=scope_key,
                     kind="summary",
                     scope=scope,
-                ))
+                )
             except Exception:
                 log.warning("Failed to embed summary for scope %s, skipping", scope_key)
+
+        return summary, chunk
+
+    if scope_entities:
+        n_workers = min(n_parallel, len(scope_entities))
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            futures = {
+                pool.submit(_process_scope, sk, ents): sk
+                for sk, ents in scope_entities.items()
+            }
+            for future in as_completed(futures):
+                try:
+                    summary, chunk = future.result()
+                    all_summaries.append(summary)
+                    if chunk is not None:
+                        all_chunks.append(chunk)
+                except Exception:
+                    sk = futures[future]
+                    log.warning("Failed to process scope %s, skipping", sk, exc_info=True)
+    phase4_ms = int((time.monotonic() - t_phase4) * 1000)
 
     commit = _compute_graph_commit(all_entities, all_relationships)
     typed_scope_entities = {ScopePath(Path(k)): v for k, v in scope_entities.items()}
@@ -279,15 +322,35 @@ def ingest(
     )
 
     elapsed = int((time.monotonic() - t0) * 1000)
-    log.info(
-        "ingested",
-        extra={
-            "files_processed": len(all_files),
-            "entities": len(all_entities),
-            "relationships": len(all_relationships),
-            "graph_commit": str(commit),
-            "duration_ms": elapsed,
-        },
-    )
+    extra: dict[str, object] = {
+        "files_processed": len(all_files),
+        "entities": len(all_entities),
+        "relationships": len(all_relationships),
+        "graph_commit": str(commit),
+        "duration_ms": elapsed,
+        "phase_structured_ms": phase1_ms,
+        "phase_chunks_ms": phase2_ms,
+        "phase_embed_entities_ms": phase3_ms,
+        "phase_scope_summaries_ms": phase4_ms,
+    }
+    if metrics is not None:
+        extra.update({
+            "llm_chat_calls": metrics.chat_calls,
+            "llm_chat_input_tokens": metrics.chat_input_tokens,
+            "llm_chat_output_tokens": metrics.chat_output_tokens,
+            "llm_chat_cache_hit_tokens": metrics.chat_cache_hit_tokens,
+            "llm_chat_cache_miss_tokens": metrics.chat_cache_miss_tokens,
+            "llm_prompt_cache_hit_rate": round(metrics.prompt_cache_hit_rate, 3),
+            "llm_embed_calls": metrics.embed_calls,
+            "llm_embed_input_tokens": metrics.embed_input_tokens,
+            "llm_total_elapsed_ms": metrics.total_elapsed_ms,
+            "llm_cache_hits": metrics.cache_hits,
+            "llm_cache_misses": metrics.cache_misses,
+            "llm_estimated_cost_usd": round(metrics.estimated_cost_usd(
+                chat_input_rate=0.14, chat_output_rate=0.28,
+                chat_cache_hit_rate=0.0028, embed_input_rate=0.012,
+            ), 6),
+        })
+    log.info("ingested", extra=extra)
 
     return commit

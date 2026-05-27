@@ -17,6 +17,14 @@ _EXTRA_KEYS = frozenset({
     "files_processed", "entities", "relationships",
     "stale_graph_commit", "current_graph_commit", "source_tree_stale",
     "view", "kind",
+    "phase_structured_ms", "phase_chunks_ms",
+    "phase_embed_entities_ms", "phase_scope_summaries_ms",
+    "llm_chat_calls", "llm_chat_input_tokens", "llm_chat_output_tokens",
+    "llm_chat_cache_hit_tokens", "llm_chat_cache_miss_tokens",
+    "llm_prompt_cache_hit_rate",
+    "llm_embed_calls", "llm_embed_input_tokens",
+    "llm_total_elapsed_ms", "llm_cache_hits", "llm_cache_misses",
+    "llm_estimated_cost_usd",
 })
 
 

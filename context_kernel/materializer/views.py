@@ -6,17 +6,49 @@ from context_kernel.graph.protocol import Entity, KnowledgeStore, Summary
 from context_kernel.types import ScopePath, ViewSpec
 
 
+def _first_sentence(md: str) -> str:
+    """Extract the first sentence from a markdown summary for use as a one-liner."""
+    text = md.lstrip().removeprefix("#").lstrip()
+    for delim in (". ", ".\n"):
+        idx = text.find(delim)
+        if idx != -1:
+            return text[: idx + 1]
+    return text[:200].rstrip() + ("..." if len(text) > 200 else "")
+
+
+def _scope_depth(scope: ScopePath) -> int:
+    return len(scope.parts) - 1
+
+
 def _render_index(store: KnowledgeStore) -> str:
     summaries = store.list_summaries()
     if not summaries:
         return "# Index\n\nNo scopes materialized yet.\n"
 
     summaries.sort(key=lambda s: str(s.scope))
-    lines = ["# Index\n"]
+
+    projects: dict[str, list[Summary]] = {}
     for s in summaries:
-        lines.append(f"## {s.scope}")
-        lines.append(s.markdown)
-        lines.append(f"→ {s.scope}/AGENTS.md\n")
+        project = s.scope.parts[0] if s.scope.parts else str(s.scope)
+        projects.setdefault(project, []).append(s)
+
+    lines = ["# Index\n"]
+    for project, scopes in projects.items():
+        root = next((s for s in scopes if str(s.scope) == project), None)
+        if root:
+            lines.append(f"## {project}")
+            lines.append(f"{_first_sentence(root.markdown)}")
+            lines.append(f"→ [{project}/AGENTS.md]({project}/AGENTS.md)\n")
+            children = [s for s in scopes if s is not root and _scope_depth(s.scope) == 1]
+        else:
+            lines.append(f"## {project}\n")
+            children = scopes
+
+        if children:
+            for c in children:
+                rel = str(c.scope)
+                lines.append(f"- **{rel}** — {_first_sentence(c.markdown)} → [{rel}/AGENTS.md]({rel}/AGENTS.md)")
+            lines.append("")
     return "\n".join(lines) + "\n"
 
 
