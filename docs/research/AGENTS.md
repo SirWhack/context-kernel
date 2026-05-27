@@ -1,7 +1,11 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: 5f56e56d9e771ad6a71ffe24d8c528667996ca8ff5eb47da8c186dc23f2f13b2
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: cb2274f310c12e00ca69fc8a0bd4f861a8705cbf3e3231116f8c3ef52b1414ba
+materialized: 2026-05-27T21:03:11Z
 -->
 
-Scope docs/research/: 0 modules, 0 classes, 0 functions. Key interfaces: (none).
+This scope documents the research and decision-making process for selecting a local embedding model and an LLM for indexing within a LightRAG context kernel, operating under strict hardware constraints. The primary use case is processing long English technical documents, requiring a model that supports long context windows and instruction-aware asymmetric retrieval. The entire analysis is driven by the externally imposed boundary that the system must handle documents longer than 512 tokens, and must co-reside a 17-20 GB quantized MoE LLM with an embedding model on a single 24 GB AMD RX 7900 XTX GPU.
+
+The core output of this research is a resolved choice: **Qwen3-Embedding-0.6B** is selected as the best single local embedder. This model offers a 61.83 MTEB English Retrieval score, a 32K context window, and instruction-aware asymmetric retrieval under an Apache-2.0 license. The runner-up is **bge-m3** (0.57B parameters, 8192 context, MIT license), chosen as the conservative, battle-tested fallback that does not require query instructions. The decision document explicitly acknowledges the tension between bge-m3's mature RAG integrations and Qwen3-0.6B's materially better retrieval and longer context, ultimately accepting "slightly more integration fragility" for the performance gain. The scope also documents the exclusion of larger models like **gte-Qwen2-1.5B-instruct** (due to budget, `trust_remote_code`, and performance issues) and a 4B parameter model (due to VRAM consumption), as well as API-only models like Cohere Embed v4.
+
+For the indexing LLM, the research selects **Qwen3-30B-A3B-Instruct-2507** over smaller dense models with stronger official benchmarks (IFEval/BFCL). The rationale is that strict delimiter format compliance without reasoning leakage is more important than raw benchmark strength for LightRAG extraction. This choice is made despite LightRAG's general recommendation for models larger than 14.7B, with **Qwen2.5-14B-Instruct** (in 4-bit GGUF, 8.99GB) noted as a pragmatic but suboptimal alternative. The scope also surfaces unresolved approaches for chunking and node construction, and flags known risks with the GGUF path for Qwen3 embeddings, recommending PyTorch ROCm instead. The research relies on official MTEB scores (61.83 for Qwen3-0.6B) and structure-adjacent proxies (IFEval/BFCL) for the extraction stage, as no LightRAG-specific leaderboard exists.

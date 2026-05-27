@@ -1,7 +1,13 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: ad2b00a754d93f628b594ff2a8977cb743d304ba7cb437d814bd1d6bb08a0cf5
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: e60e80bbeebf41c0f1b5e14a41bc828210d2f63b0c52139add0a82ec44ab91e3
+materialized: 2026-05-27T21:03:11Z
 -->
 
-Scope docs/: 0 modules, 0 classes, 0 functions. Key interfaces: (none).
+This scope contains the design documentation for the Context Kernel, a system that produces and maintains curated, scope-appropriate context for coding agents across multiple projects. The Context Kernel materializes LLM-summarized, entity-graph-linked plain files that are consumable by agents via existing tools (Read, Grep, Glob) and by humans via Obsidian. The primary consumer is the coding agent (Claude Code, Cursor, etc.), not the human — the human is a secondary consumer via Obsidian.
+
+The design establishes a clear separation between the agent-facing surface and the hidden capability behind it. The agent-facing surface consists of two layers: a primary layer of AGENTS.md files on disk accessed via Read/Grep/Glob tools, and a secondary layer of two read-only MCP tools for orientation. The MCP server is narrow, stateless, and pure — it holds no independent index, cache, or session state, and returns only pre-materialized content that is derivable from the on-disk materialized tree. The two MCP tools are: a hierarchical context tool returning markdown for a given scope path, and a semantic lookup tool using embeddings to return relevant chunks and source file paths. Both tools are pure functions of the on-disk materialized tree, reading the same files the agent could read directly.
+
+The design enforces several invariants. The agent cannot change Context Kernel state via MCP; all mutation goes through the `ck` operator CLI, which provides `ingest`, `materialize`, `check`, and `mcp` commands. The system uses a pull-based just-in-time regeneration model: a pre-read hook runs `ck check --fix` before any Read of AGENTS.md or `.context-kernel/views/` files, ensuring files are always fresh from the agent's perspective. The MCP server invokes the same staleness gate before returning chunks. The graph is the source of truth; AGENTS.md files are materialized views, never sources of truth. Free-form edits outside `<!-- pinned -->` blocks are overwritten without warning.
+
+The design abstracts several decisions behind protocols: a graph backend protocol (fast-graphrag, LightRAG, etc.), a summarization model protocol (Qwen3-14B, 32B, cloud), an embedding model protocol, and a materialization policy protocol. Views are defined as (graph_query, template) → file specs in config.toml, making view addition a config change not a code change. The initial view system ships with a small starter set: by-topic/<tag>.md, recent-changes.md, and index.md. The design also documents unresolved issues requiring future decision, including the exact syntax for pinned blocks, latency concerns for pull-based regeneration on large projects, and whether to support agents other than Claude Code in the first version.

@@ -1,7 +1,15 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: 2e42f8a4a9ccb649f63ee20cb59b5b8788776bba64a8f267b6f66c2e00d3473a
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: e9f369a1bbebbd0694e6303095e179981363905e79b2237bf86c6a4d75bbe389
+materialized: 2026-05-27T21:03:11Z
 -->
 
-Scope docs/reference/: 0 modules, 0 classes, 0 functions. Key interfaces: (none).
+# Model-Time Documentation Reference Scope
+
+This scope documents the design decisions, architecture, and implementation details of the Context Kernel's graph subsystem. It serves as the authoritative reference for how the knowledge graph stores, indexes, and retrieves entities, relationships, and scope summaries derived from source files. The scope captures the rationale behind key technical choices including the switch to LightRAG, content-addressed graph commits, cross-scope relationship derivation, and hybrid embedding search for retrieval.
+
+The KnowledgeStore protocol defines the public API surface that other components interact with. This Python Protocol class in `protocol.py` exposes read methods for entity lookup, neighbor traversal, summary retrieval, embedding retrieval, and vector similarity search, along with the sole write method `upsert()`. The protocol deliberately hides backend implementation details behind a Parnas information-hiding boundary — it does not expose Cypher, Gremlin, or SQL, only shape-specific queries. Three consumers use the read methods: the Materializer (for scope summaries and entity-by-scope mappings), the OrientationServer (for vector similarity search via the `find` method), and the FreshnessGate (for `graph_commit` comparison). Only the Ingester is permitted to call `upsert()`, which accepts `graph_commit`, entities, relationships, summaries, and optional chunks and scope_entities.
+
+Internally, the graph subsystem uses a self-contained JSON-persisted store implementing the KnowledgeStore protocol. The current implementation depends only on `json`, `math`, `struct`, and `pathlib`, with brute-force cosine similarity search that unpacks embedding bytes, computes dot-product and magnitude, sorts by score, and truncates to top-k with optional scope filtering. The adjacency index maps entity IDs to lists of relationship indices and is rebuilt on load and after every upsert operation. Full state is persisted to `state.json` after each upsert, with embedding bytes stored separately. The `graph_commit` identity is derived from source file content (not graph state) to avoid LLM-nondeterminism, ensuring re-ingestion on unchanged sources is a no-op.
+
+This scope documents the sequenced ingestion process (file discovery → handler dispatch → entity extraction → embedding → per-scope summary generation → graph upsert) and the two handler protocols that separate structured sources (Python, TypeScript/JS) from unstructured sources (Markdown). It also captures documented limitations: the full-state rewrite approach that won't scale to very large graphs, entity ID instability across re-ingests if resolution changes, and the deferral of cross-project entity merging and LightRAG library integration to post-v1. The graph backend is selected via the `storage_backend` key in `.context-kernel/config.toml` under `[ingester]`, defaulting to `networkx`.

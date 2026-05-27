@@ -1,12 +1,11 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: cbee4cfacf2499470d24f5dff8df363b78e6801945ed1d8949cd5efb0f8bcbf0
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: 826cf5a183c4f8d005f0cf8cc546371f63ea3bfc2b0c94a543fa01ef41789cdb
+materialized: 2026-05-27T21:03:11Z
 -->
 
-Scope context_kernel/orientation_server/: 4 modules, 0 classes, 5 functions. Key interfaces: serve, assemble, nearest_chunks, overview, find.
+The OrientationServer scope implements a read-through MCP (Model Context Protocol) server that provides LLM agents with structured access to the materialized knowledge tree. Its core responsibility is to serve as the orientation layer — answering "what is in this scope?" and "where can I find relevant information?" — by exposing two primary tools: `overview` and `find`. The server is launched via the `serve` function, which takes a `tree_root` path, a `KnowledgeStore` protocol, an `OrientationConfig`, and an optional `Embedder`, then runs an MCP stdio server until shutdown.
 
-## Reference documentation
+The public API surface consists of three tools registered in `tools.py`. The `overview(scope, max_tokens, tree_root)` function reads the materialized tree at the given `ScopePath`, formats the content as markdown with file-path citations, and enforces a token budget via the `assemble` function from `response.py`. The `find(query, scope, max_tokens, tree_root, store, embedder)` function performs embedding-similarity search over the hybrid corpus by calling `nearest_chunks` from `similarity.py`, which embeds the query and returns top-k `SearchResult` objects from the `KnowledgeStore`. Both tools delegate to `assemble` for consistent markdown formatting and token-budget enforcement, using a private constant `_CHARS_PER_TOKEN` to estimate token counts.
 
-For operational understanding of this subsystem, see [orientation_server.md](../../docs/reference/orientation_server.md).
-
+Internally, the scope separates concerns cleanly: `response.py` handles formatting and budget enforcement, `similarity.py` handles embedding-based retrieval, and `tools.py` wires these together into MCP tool handlers. The `serve` function in `__init__.py` acts as the entry point, creating a `FastMCP` instance and registering the tools. The scope depends on `context_kernel.graph.protocol.KnowledgeStore` and `SearchResult` for data access, `context_kernel.types.ScopePath` for path representation, and `context_kernel.materializer.headers.parse` for parsing materialized tree headers. The embedder dependency is optional — the `find` tool gracefully degrades when no embedder is available, falling back to a simpler search strategy.

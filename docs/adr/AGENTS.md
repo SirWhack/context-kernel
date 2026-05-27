@@ -1,7 +1,11 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: 5eb6e21ef047d35cd2fb1e11a534160dcf146c5bd277f47a0593489673530f35
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: 0b52f3e9c63592ceac8f5814a75cfd2ae4ac6cce5f3a9e22b1cbc23cd6dddfe9
+materialized: 2026-05-27T21:03:11Z
 -->
 
-Scope docs/adr/: 0 modules, 0 classes, 0 functions. Key interfaces: (none).
+This scope defines and enforces the documentation discipline for the entire project. It establishes a theory-driven documentation system inspired by Peter Naur's "Programming as Theory Building" (1985) and Matt Pocock's "grill-with-docs" convention. The system consists of three document types with distinct shelf lives and responsibilities: THEORY.md (years-long, holding thesis, invariants, non-goals, and open questions), CONTEXT.md (months-long, defining glossary and relationships), and Architecture Decision Records (ADRs, forever-localized, recording decisions that close questions opened by THEORY.md). The key invariant is that THEORY.md and ADRs must have no overlapping content — THEORY.md opens questions, ADRs close them.
+
+The documentation system includes explicit rot signals that trigger maintenance: THEORY.md becoming marketing copy, CONTEXT.md having stale terms, ADRs covering trivial decisions, or contributors citing documents without understanding them. Every non-trivial change must be checked against THEORY.md before merging, and if the theory shifts, the revision log updates in the same change. ADRs follow a three-condition rule: they must be hard to reverse, surprising without context, and represent a real trade-off with real alternatives. Most decisions are not ADR-worthy.
+
+This scope also records the project's architectural decisions about its own tooling and interfaces. The materialized markdown tree (AGENTS.md at every scope plus cross-cutting views) serves as the agent's primary interface, with MCP used only as a narrow orientation aid that points at files, never replacing file reads. The system preserves a multi-agent framing — coding agents work over the context, not just Claude Code. Each scope gets a thin CLAUDE.md containing a single `@AGENTS.md` import to bridge Claude Code's directory-walking auto-load behavior while keeping canonical content single-sourced in AGENTS.md. The decision to derive `graph_commit` from source content rather than graph state ensures the commit reflects original data, with a cache keyed by (path, mtime, size) to mitigate latency from hashing thousands of files per ingest.

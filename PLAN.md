@@ -67,9 +67,10 @@ To be filled by `/grill-backlog` after v1 ships (or partway, once priorities sta
 
 ## Status
 
-- **MVP:** Not applicable — thesis accepted, build-mode. v1 release at S10.
-- **Last reviewed:** 2026-05-24
-- **Slices completed:** 10 of 13. S0 GO — see [spike/results.md](./spike/results.md). S1–S9 complete.
-- **Active specs:** [S10 — Cross-project dogfood demo](./docs/slices/S10.md) (spec complete, ready to demo).
+- **v1 release:** S10 demo passed 2026-05-27. 3-project portfolio (model-time, evergreenlabs, evergreenlabs-bot), 3953 entities, 48 AGENTS.md files, cross-project MCP `find`, pre-commit freshness proof verified.
+- **Last reviewed:** 2026-05-27
+- **Slices completed:** S0–S10 (v1 release gate). S11–S13 are post-demo polish.
+- **Active specs:** None — v1 complete. Post-v1 backlog has [ADR-0015](./docs/adr/0015-entity-confidence-scoring.md) (confidence scoring) and [ADR-0016](./docs/adr/0016-contextual-entity-extraction.md) (contextual extraction) as first priorities.
+- **Cloud LLM:** DeepSeek V4 Flash (summarizer) + Cloudflare Workers AI (embedder). Full portfolio ingest: 126s, $0.115, 74% prompt cache hit rate.
 - **S0 winner:** Qwen3-30B-A3B-Instruct-2507 Q4_K_M (94 tok/s, 2 format warnings, 38.3% cross-scope density, 9.9s first-read latency). Qwen3.6-MTP is the speed option. See [docs/slices/S0.md](./docs/slices/S0.md).
-- **Code:** `/scaffold-modules` output landed (`context_kernel/` + `tests/` + `pyproject.toml`); no implementation bodies yet.
+- **Known gap:** model-time cold ingest (no cache) takes 91s, exceeding the 60s/project target. Warm-cache ingest (pre-commit hook path) is 50s. Acceptable for v1.
