@@ -5,13 +5,17 @@ See ARCHITECTURE.md §2.2, ADR-0013 for the markdown entity taxonomy.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+from pathlib import Path
 from typing import Protocol
 
 from context_kernel.ingester.handlers import RawEntity, RawRelationship
 
 log = logging.getLogger(__name__)
+
+_CACHE_VERSION = "v1"
 
 # Entity kinds the LLM is instructed to extract from documentation.
 # See ADR-0013 for rationale on why these 8 and what was cut.
@@ -80,6 +84,10 @@ class Summarizer(Protocol):
         """Best-effort extraction. Quality is not guaranteed (§2.2 Does not own)."""
         ...
 
+    def summarize_scope(self, scope_name: str, entity_descriptions: list[str]) -> str | None:
+        """Produce a ~500-token orientation summary for a scope. Returns None on failure."""
+        ...
+
 
 def _parse_llm_response(raw: str) -> tuple[list[RawEntity], list[RawRelationship]]:
     """Parse JSON from LLM output into Raw types. Tolerates common LLM quirks."""
@@ -121,14 +129,75 @@ def _parse_llm_response(raw: str) -> tuple[list[RawEntity], list[RawRelationship
     return entities, relationships
 
 
-class LLMSummarizer:
-    """Concrete Summarizer that calls a local OpenAI-compatible LLM endpoint."""
+_SCOPE_SUMMARY_PROMPT = """\
+You are writing an orientation summary for a scope (directory) in a software project.
+Given the entity descriptions from this scope, produce a concise markdown summary
+that helps an agent or engineer understand:
 
-    def __init__(self, endpoint: str, model: str) -> None:
+1. What this scope does — its purpose and responsibility
+2. Key interfaces — the public API surface other code interacts with
+3. Internal structure — major classes, protocols, and how they relate
+4. Dependencies — what this scope imports from or connects to
+
+## Rules
+- Write 2-4 paragraphs of prose, ~300-500 tokens total.
+- Lead with what the scope DOES, not what it contains.
+- Name specific classes, functions, and protocols — be concrete.
+- Mention design patterns (e.g., "hides the backend choice behind a Protocol").
+- Do NOT list every entity. Summarize; highlight what matters for orientation.
+- Do NOT use markdown headers — this will be embedded inside an AGENTS.md file.
+- Write in present tense, third person ("The ingester reads...", "This scope handles...").
+"""
+
+
+def _cache_key(text: str) -> str:
+    return hashlib.sha256(f"{_CACHE_VERSION}:{text}".encode()).hexdigest()
+
+
+class LLMSummarizer:
+    """Concrete Summarizer that calls a local OpenAI-compatible LLM endpoint.
+
+    Caches entity extraction results per chunk (content-addressed) to avoid
+    redundant LLM calls on re-ingest of unchanged files.
+    """
+
+    def __init__(self, endpoint: str, model: str, cache_dir: Path | None = None) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._model = model
+        self._cache_dir = cache_dir
+        if self._cache_dir is not None:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_hits = 0
+        self._cache_misses = 0
 
-    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
+    def _cache_path(self, key: str) -> Path | None:
+        if self._cache_dir is None:
+            return None
+        return self._cache_dir / f"{key}.json"
+
+    def _read_cache(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]] | None:
+        path = self._cache_path(_cache_key(text))
+        if path is None or not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            entities = [RawEntity(name=e["name"], kind=e["kind"], description=e["description"]) for e in data.get("entities", [])]
+            relationships = [RawRelationship(source_name=r["source_name"], target_name=r["target_name"], kind=r["kind"], description=r["description"]) for r in data.get("relationships", [])]
+            return entities, relationships
+        except Exception:
+            return None
+
+    def _write_cache(self, text: str, entities: list[RawEntity], relationships: list[RawRelationship]) -> None:
+        path = self._cache_path(_cache_key(text))
+        if path is None:
+            return
+        data = {
+            "entities": [{"name": e.name, "kind": e.kind, "description": e.description} for e in entities],
+            "relationships": [{"source_name": r.source_name, "target_name": r.target_name, "kind": r.kind, "description": r.description} for r in relationships],
+        }
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def _chat(self, system: str, user: str, max_tokens: int = 2048) -> str | None:
         import httpx
 
         try:
@@ -137,18 +206,42 @@ class LLMSummarizer:
                 json={
                     "model": self._model,
                     "messages": [
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 2048,
+                    "max_tokens": max_tokens,
                 },
                 timeout=120.0,
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+            return resp.json()["choices"][0]["message"]["content"]
         except Exception:
-            log.warning("Summarizer LLM call failed for chunk (len=%d), skipping", len(text), exc_info=True)
+            log.warning("LLM call failed (system prompt len=%d, user len=%d)", len(system), len(user), exc_info=True)
+            return None
+
+    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
+        cached = self._read_cache(text)
+        if cached is not None:
+            self._cache_hits += 1
+            return cached
+
+        self._cache_misses += 1
+        content = self._chat(_SYSTEM_PROMPT, text)
+        if content is None:
             return [], []
 
-        return _parse_llm_response(content)
+        entities, relationships = _parse_llm_response(content)
+        self._write_cache(text, entities, relationships)
+        return entities, relationships
+
+    def summarize_scope(self, scope_name: str, entity_descriptions: list[str]) -> str | None:
+        combined = "\n\n---\n\n".join(entity_descriptions)
+        if len(combined) > 12000:
+            combined = combined[:12000] + "\n\n[... truncated]"
+
+        user_msg = f"Scope: {scope_name}/\n\nEntities in this scope:\n\n{combined}"
+        content = self._chat(_SCOPE_SUMMARY_PROMPT, user_msg, max_tokens=1024)
+        if content is None:
+            return None
+        return content.strip()

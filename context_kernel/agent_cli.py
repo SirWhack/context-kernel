@@ -130,6 +130,7 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
     summarizer = LLMSummarizer(
         endpoint=config.ingester.summarizer_endpoint,
         model=config.ingester.summarizer_model,
+        cache_dir=portfolio / ".context-kernel" / "cache",
     )
     commit = None
     for project in config.projects:

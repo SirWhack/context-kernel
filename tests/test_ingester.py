@@ -933,6 +933,9 @@ class _FakeSummarizer:
         entities = [RawEntity(name="mock-entity", kind="decision", description=f"Extracted from: {text[:50]}")]
         return entities, []
 
+    def summarize_scope(self, scope_name: str, entity_descriptions: list[str]) -> str | None:
+        return f"LLM summary for {scope_name}: {len(entity_descriptions)} entities."
+
 
 class TestIngestMarkdownWithoutSummarizer:
     def test_skips_md_without_summarizer(self, tmp_path):
@@ -1001,6 +1004,47 @@ class TestIngestMixedSources:
         assert "Root" in names
         assert "Child" in names
         assert len(store.summaries) >= 2
+
+
+# ── LLM scope summaries (ADR-0007) ───────────────────────────────────
+
+
+class TestLLMScopeSummaries:
+    def test_uses_llm_summary_when_summarizer_present(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_FakeSummarizer())
+        assert len(store.summaries) >= 1
+        assert any("LLM summary" in s.markdown for s in store.summaries)
+
+    def test_falls_back_to_mechanical_without_summarizer(self, tmp_path):
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert len(store.summaries) >= 1
+        assert any("Scope" in s.markdown and "modules" in s.markdown for s in store.summaries)
+        assert not any("LLM summary" in s.markdown for s in store.summaries)
+
+    def test_llm_summary_includes_scope_name(self, tmp_path):
+        sub = tmp_path / "auth"
+        sub.mkdir()
+        (sub / "service.py").write_text("class AuthService:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_FakeSummarizer())
+        auth_summaries = [s for s in store.summaries if "auth" in str(s.scope)]
+        assert len(auth_summaries) >= 1
+        assert "auth" in auth_summaries[0].markdown
+
+    def test_falls_back_on_summarizer_scope_failure(self, tmp_path):
+        class _FailingScopeSummarizer(_FakeSummarizer):
+            def summarize_scope(self, scope_name, entity_descriptions):
+                return None
+
+        (tmp_path / "app.py").write_text("class App:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_FailingScopeSummarizer())
+        assert len(store.summaries) >= 1
+        assert any("Scope" in s.markdown and "modules" in s.markdown for s in store.summaries)
 
 
 # ── Embedding at ingest (S5) ──────────────────────────────────────────
