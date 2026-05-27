@@ -12,11 +12,12 @@ This project uses a Naur-aligned documentation system, informed by Peter Naur's 
 | `ARCHITECTURE.md` | Structure | System modules, C4 diagrams, Ousterhout module analysis | Years (revised) |
 | `AZURE_ARCHITECTURE.md` | Deployment | Azure resources, identity flows, observability, cost levers | Years (revised) |
 | `CONTEXT.md` | Language | Glossary, relationships, flagged ambiguities | Months |
+| `docs/reference/` | Understanding | How each subsystem works today — authored root nodes for agent orientation | Months |
 | `docs/adr/` | Branches | Decisions + why, dated and local | Forever-localized |
 | `PLAN.md` | Roadmap | MVP definition + sequenced feature backlog | Months |
 | Specs / issues | Leaves | What we're building right now | Weeks / days |
 
-There is no overlap. `THEORY.md` *names* concepts but defines them in `CONTEXT.md`. `THEORY.md` *states* invariants and non-goals; ADRs *record the decisions* that produced them. `THEORY.md` *opens* questions; ADRs close them. `ARCHITECTURE.md` describes *how the system is structured*; `THEORY.md` describes *why this system exists*. `PLAN.md` sequences *what to build*; the leaves are the active specs for the current slice.
+There is no overlap. `THEORY.md` *names* concepts but defines them in `CONTEXT.md`. `THEORY.md` *states* invariants and non-goals; ADRs *record the decisions* that produced them. `THEORY.md` *opens* questions; ADRs close them. `ARCHITECTURE.md` describes *how the system is structured*; `THEORY.md` describes *why this system exists*. `docs/reference/` describes *how each subsystem works today*; `ARCHITECTURE.md` describes what each module *owns*. `PLAN.md` sequences *what to build*; the leaves are the active specs for the current slice.
 
 `ARCHITECTURE.md` and `AZURE_ARCHITECTURE.md` are not present in every project — they exist only for software (and Azure-deployed) projects. Non-software projects (curricula, research, design) operate with just the trunk + language + branches + roadmap.
 
@@ -29,6 +30,7 @@ Before any non-trivial work:
 1. Read `THEORY.md`. Anchor on the thesis. If your proposed change conflicts with the thesis, flag it before continuing.
 2. Read `CONTEXT.md`. Use the canonical terms. If the user uses a term that conflicts with `CONTEXT.md`, surface the conflict immediately ("your glossary defines X as Y, but you seem to mean Z — which is it?").
 3. Scan `docs/adr/` for any ADR touching the area you're about to work in. **Do not re-litigate decisions recorded in ADRs.** If you believe an ADR should be revisited, say so explicitly with the friction that warrants it.
+4. Check `docs/reference/` for a reference doc covering the subsystem you're working in. If one exists, read it — it's the operational understanding of how that subsystem works today. If one doesn't exist and you're doing substantial work in a complex subsystem, flag the gap.
 
 Trivial changes (typo fixes, formatting, dependency bumps with no behavior change) do not require this read. Use judgment.
 
@@ -62,6 +64,16 @@ Most ADRs can be one paragraph. Optional sections (Status, Considered Options, C
 - **Invariants and non-goals** can be edited via normal PR review. If an invariant change is hard to reverse, also record it as an ADR.
 - **Open questions** are added when surfaced and removed when answered (typically by an ADR). When you close an open question, link the ADR.
 
+## Reference doc discipline (`docs/reference/`)
+
+Reference documents are **authored source documents** — input to the ingestion pipeline, not output of materialization. They describe how a subsystem works today: its pipeline, its decisions, its operational shape. They are the "root nodes" that, when ingested, produce the high-centrality entities connecting code entities to each other in the graph.
+
+- **One per complex subsystem.** Not every scope needs one — only subsystems with enough structural complexity that AGENTS.md alone leaves an agent underequipped. The Materializer flags scopes that would benefit (see [ADR-0014](./docs/adr/0014-reference-docs-as-authored-root-nodes.md)).
+- **AGENTS.md is the index card; reference docs are the chapter.** AGENTS.md (via CLAUDE.md bridge) provides orientation — what's here, what connects to other scopes. Reference docs provide understanding — how the subsystem works end-to-end. AGENTS.md points to the reference doc; the agent follows up with `Read`.
+- **Structured for ingestion.** Heading hierarchy is load-bearing — each H2/H3 section becomes a chunk with full heading-path context. Sections target ~256-512 tokens. Use `CONTEXT.md` terms as entity anchors. Cross-reference ADRs and other reference docs explicitly.
+- **Use `/init-reference`** to generate the skeleton from ARCHITECTURE.md + CONTEXT.md + relevant ADRs + code. The skill handles formatting; the content is authored.
+- **Not graph dumps.** A reference doc describes what a subsystem IS and how it works — not a list of linked entities. The entities come from the ingestion of the document, not the other way around.
+
 ## Hand-write rule
 
 When the user is creating or refining the thesis or a major invariant, **the user writes the first draft themselves**. You may sharpen, challenge, compress, and refine — but you must not draft the thesis from scratch on the user's behalf.
@@ -84,6 +96,7 @@ In recommended order of first use:
   - **`/grill-backlog`** — forges or refreshes `PLAN.md`'s post-release Features section. Lightweight, recurring. ~30 min first pass, ~15 min refresh.
   - Sub-skills are independently invocable — re-run a single one when one artifact drifts without re-grilling the rest.
 - **`/scaffold-modules`** — translate `ARCHITECTURE.md` modules into a code skeleton (directory layout + per-module interface shells with types, signatures, error classes, why-docstring). No business logic. Run once after `/grill-architecture`, before the first MVP slice. Re-runnable to resync when `ARCHITECTURE.md` changes.
+- **`/init-reference`** — generate a reference doc skeleton for a subsystem. Reads ARCHITECTURE.md, CONTEXT.md, relevant ADRs, and code to produce a heading structure optimized for ingestion. Content is then authored. Use when AGENTS.md flags a documentation gap or when starting substantial work in a complex subsystem. See [ADR-0014](./docs/adr/0014-reference-docs-as-authored-root-nodes.md).
 - **`/grill-with-docs`** — Matt Pocock's skill. Use before any non-trivial feature or `PLAN.md` slice: forces grilling on the plan, produces `CONTEXT.md` refinements and ADRs as side effects.
 - **`/improve-codebase-architecture`** — Matt Pocock's skill. Run periodically (every few days or weekly). Reads `CONTEXT.md` and `docs/adr/` to surface deepening opportunities without re-litigating settled decisions.
 
@@ -110,12 +123,17 @@ In recommended order of first use:
    │      ↓                            │
    │    build (manually or via /tdd)   │
    │      ↓                            │
+   │    /init-reference (when AGENTS.md│
+   │      flags a documentation gap    │
+   │      in a complex subsystem)      │
+   │      ↓                            │
    │   update PLAN.md status           │
    └───────────────────────────────────┘
         ↓
  Weekly:    /improve-codebase-architecture
  As needed: /grill-theory (if thesis drifts)
             /grill-roadmap (if MVP scope changes or backlog feels stale)
+            /init-reference (when entering under-documented subsystems)
 ```
 
 ## When a user asks you to bypass these rules

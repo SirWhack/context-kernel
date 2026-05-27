@@ -5,10 +5,21 @@ from context_kernel.materializer.headers import FreshnessHeader, render
 from context_kernel.types import ScopePath
 
 
-def render_agents_md(header: FreshnessHeader, summary: Summary | None) -> str:
+def render_agents_md(
+    header: FreshnessHeader,
+    summary: Summary | None,
+    *,
+    reference_section: str | None = None,
+    gap_section: str | None = None,
+) -> str:
     """Render the canonical AGENTS.md content for this scope."""
     body = summary.markdown if summary else ""
-    return render(header) + "\n\n" + body + "\n"
+    parts = [render(header) + "\n\n" + body]
+    if reference_section is not None:
+        parts.append(reference_section)
+    if gap_section is not None:
+        parts.append(gap_section)
+    return "\n\n".join(parts) + "\n"
 
 
 def render_claude_md_bridge() -> str:

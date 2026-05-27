@@ -34,6 +34,7 @@ class IngesterConfig:
 @dataclass(frozen=True)
 class MaterializerConfig:
     views: list[ViewSpec] = field(default_factory=list)
+    gap_detection_threshold: int = 10
 
 
 @dataclass(frozen=True)
@@ -107,7 +108,10 @@ def load(config_path: Path | None = None) -> Config:
             k: v for k, v in ingester_raw.items()
             if k in IngesterConfig.__dataclass_fields__
         }),
-        materializer=MaterializerConfig(views=views),
+        materializer=MaterializerConfig(
+            views=views,
+            gap_detection_threshold=materializer_raw.get("gap_detection_threshold", 10),
+        ),
         orientation=OrientationConfig(**{
             k: v for k, v in orientation_raw.items()
             if k in OrientationConfig.__dataclass_fields__

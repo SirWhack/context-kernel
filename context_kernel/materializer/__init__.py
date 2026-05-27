@@ -11,6 +11,11 @@ from context_kernel.ingester.change_detection import source_tree_hash
 from context_kernel.materializer.errors import MaterializationError
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
 from context_kernel.materializer.pinned import extract, merge
+from context_kernel.materializer.reference_docs import (
+    detect_documentation_gap,
+    find_reference_doc,
+    render_reference_pointer,
+)
 from context_kernel.materializer.templates import render_agents_md, render_claude_md_bridge
 from context_kernel.materializer.views import render_view
 from context_kernel.types import ScopePath, Sha256, ViewSpec
@@ -69,7 +74,20 @@ def materialize(
     )
     summary = store.get_summary(scope)
 
-    rendered = render_agents_md(header, summary)
+    reference_section: str | None = None
+    gap_section: str | None = None
+
+    ref_path = find_reference_doc(scope, tree_root)
+    if ref_path is not None:
+        reference_section = render_reference_pointer(ref_path, scope, tree_root)
+    else:
+        entities_by_scope = store.list_entities_by_scope()
+        scope_ents = entities_by_scope.get(scope, [])
+        gap_text = detect_documentation_gap(scope, scope_ents, tree_root, threshold=config.gap_detection_threshold)
+        if gap_text:
+            gap_section = gap_text
+
+    rendered = render_agents_md(header, summary, reference_section=reference_section, gap_section=gap_section)
     if pinned_blocks:
         rendered = merge(rendered, pinned_blocks)
 

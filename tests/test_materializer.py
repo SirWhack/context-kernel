@@ -678,3 +678,94 @@ class TestMaterializerLogging:
         assert rec.view == "index"
         assert rec.kind == "index"
         assert rec.duration_ms >= 0
+
+
+# ── Reference doc system (ADR-0014 Phase 1) ─────────────────────────────
+
+
+class TestReferenceDocSystem:
+    def _materialize_scope(self, tmp_path, store, scope_name="src"):
+        scope = ScopePath(Path(scope_name))
+        scope_dir = tmp_path / scope_name
+        scope_dir.mkdir(exist_ok=True)
+        (scope_dir / "main.py").write_text("code")
+        written = materialize(scope, store, tmp_path, MaterializerConfig())
+        return scope, scope_dir, written
+
+    def test_pointer_rendered_when_ref_doc_exists(self, tmp_path):
+        ref_dir = tmp_path / "docs" / "reference"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "src.md").write_text("# Src reference\n")
+        store = _FakeStore()
+        scope, scope_dir, written = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "## Reference documentation" in text
+        assert "src.md" in text
+
+    def test_no_pointer_when_ref_doc_missing(self, tmp_path):
+        store = _FakeStore()
+        scope, scope_dir, written = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "Reference documentation" not in text
+
+    def test_gap_recommendation_when_many_entities(self, tmp_path):
+        store = _FakeStore()
+        scope_path = ScopePath(Path("src"))
+        entities = [
+            Entity(id=f"e{i}", name=f"func_{i}", kind="function", description=f"Does thing {i}.\nFile: src/mod.py")
+            for i in range(12)
+        ]
+        store._scope_entities = {scope_path: entities}
+        scope, scope_dir, written = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "## Recommended documentation" in text
+        assert "12 code entities" in text
+        assert "/init-reference src" in text
+
+    def test_no_gap_when_few_entities(self, tmp_path):
+        store = _FakeStore()
+        scope_path = ScopePath(Path("src"))
+        entities = [
+            Entity(id=f"e{i}", name=f"func_{i}", kind="function", description=f"Does thing {i}.")
+            for i in range(5)
+        ]
+        store._scope_entities = {scope_path: entities}
+        scope, scope_dir, written = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "Recommended documentation" not in text
+
+    def test_no_gap_when_ref_doc_exists(self, tmp_path):
+        ref_dir = tmp_path / "docs" / "reference"
+        ref_dir.mkdir(parents=True)
+        (ref_dir / "src.md").write_text("# Src reference\n")
+        store = _FakeStore()
+        scope_path = ScopePath(Path("src"))
+        entities = [
+            Entity(id=f"e{i}", name=f"func_{i}", kind="function", description=f"Does thing {i}.")
+            for i in range(15)
+        ]
+        store._scope_entities = {scope_path: entities}
+        scope, scope_dir, written = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "## Reference documentation" in text
+        assert "Recommended documentation" not in text
+
+    def test_gap_section_not_pinned(self, tmp_path):
+        store = _FakeStore()
+        scope_path = ScopePath(Path("src"))
+        entities = [
+            Entity(id=f"e{i}", name=f"func_{i}", kind="function", description=f"Does thing {i}.\nFile: src/mod.py")
+            for i in range(12)
+        ]
+        store._scope_entities = {scope_path: entities}
+        # First materialization with gap
+        scope, scope_dir, _ = self._materialize_scope(tmp_path, store)
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "Recommended documentation" in text
+
+        # Remove entities and re-materialize with a new commit to bypass idempotency
+        store._scope_entities = {}
+        store._commit = "ccdd"
+        materialize(scope, store, tmp_path, MaterializerConfig())
+        text = (scope_dir / "AGENTS.md").read_text()
+        assert "Recommended documentation" not in text
