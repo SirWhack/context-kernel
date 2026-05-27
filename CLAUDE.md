@@ -1,3 +1,5 @@
+@AGENTS.md
+
 # Agent Operating Rules — Naur-Aligned Documentation
 
 This project uses a Naur-aligned documentation system, informed by Peter Naur's *Programming as Theory Building* (1985). In agentic engineering — where the engineer's hands no longer pass over every line of code — the project's theory must be made explicit, or it does not exist.
