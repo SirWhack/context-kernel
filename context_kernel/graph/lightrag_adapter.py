@@ -66,10 +66,17 @@ class LightRAGStore(KnowledgeStore):
             e["id"]: Entity(id=e["id"], name=e["name"], kind=e["kind"], description=e["description"])
             for e in raw.get("entities", [])
         }
-        self._relationships = [
+        raw_rels = [
             Relationship(source_id=r["source_id"], target_id=r["target_id"], kind=r["kind"], description=r["description"])
             for r in raw.get("relationships", [])
         ]
+        seen: set[tuple[str, str, str]] = set()
+        self._relationships = []
+        for r in raw_rels:
+            key = (r.source_id, r.target_id, r.kind)
+            if key not in seen:
+                seen.add(key)
+                self._relationships.append(r)
         self._summaries = {
             s["scope"]: Summary(scope=ScopePath(Path(s["scope"])), digest=Sha256(s["digest"]), markdown=s["markdown"])
             for s in raw.get("summaries", [])
@@ -194,7 +201,12 @@ class LightRAGStore(KnowledgeStore):
         for e in entities:
             self._entities[e.id] = e
 
-        self._relationships.extend(relationships)
+        existing_keys = {(r.source_id, r.target_id, r.kind) for r in self._relationships}
+        for r in relationships:
+            key = (r.source_id, r.target_id, r.kind)
+            if key not in existing_keys:
+                existing_keys.add(key)
+                self._relationships.append(r)
         self._adj = {}
         for i, rel in enumerate(self._relationships):
             self._adj.setdefault(rel.source_id, []).append(i)

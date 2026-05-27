@@ -120,27 +120,35 @@ def _resolve_api_key(env_var: str) -> str | None:
     return os.environ.get(env_var) or os.environ.get("CK_API_KEY")
 
 
-def _cmd_ingest(args: argparse.Namespace, config) -> str:
+def _build_store(portfolio: Path):
     from context_kernel.graph.lightrag_adapter import LightRAGStore
-    from context_kernel.ingester import ingest
+    return LightRAGStore(portfolio / ".context-kernel" / "graph")
+
+
+def _build_embedder(config, api_key: str | None, metrics=None):
     from context_kernel.ingester.embedder import HttpEmbedder
+    return HttpEmbedder(
+        endpoint=config.ingester.embedder_endpoint,
+        model=config.ingester.embedder_model,
+        dim=config.ingester.embedder_dim,
+        api_key=api_key,
+        metrics=metrics,
+    )
+
+
+def _cmd_ingest(args: argparse.Namespace, config) -> str:
+    from context_kernel.ingester import ingest
     from context_kernel.ingester.summarizer import LLMSummarizer
     from context_kernel.types import LLMMetrics
 
     portfolio = args.portfolio.resolve()
-    store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    store = _build_store(portfolio)
     metrics = LLMMetrics()
 
     summarizer_key = _resolve_api_key(config.ingester.summarizer_api_key_env)
     embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
 
-    embedder = HttpEmbedder(
-        endpoint=config.ingester.embedder_endpoint,
-        model=config.ingester.embedder_model,
-        dim=config.ingester.embedder_dim,
-        api_key=embedder_key,
-        metrics=metrics,
-    )
+    embedder = _build_embedder(config, embedder_key, metrics)
     summarizer = LLMSummarizer(
         endpoint=config.ingester.summarizer_endpoint,
         model=config.ingester.summarizer_model,
@@ -162,13 +170,12 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
 
 
 def _cmd_materialize(args: argparse.Namespace, config) -> None:
-    from context_kernel.graph.lightrag_adapter import LightRAGStore
     from context_kernel.ingester.change_detection import discover_scopes
     from context_kernel.materializer import materialize, materialize_view
     from context_kernel.types import ScopePath
 
     portfolio = config.portfolio_root
-    store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    store = _build_store(portfolio)
     all_written: list[Path] = []
 
     if args.all_scopes:
@@ -196,27 +203,19 @@ def _cmd_materialize(args: argparse.Namespace, config) -> None:
 
 def _cmd_check(args: argparse.Namespace, config) -> None:
     from context_kernel.freshness_gate import check
-    from context_kernel.graph.lightrag_adapter import LightRAGStore
 
     portfolio = config.portfolio_root
-    store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    store = _build_store(portfolio)
     check(args.path.resolve(), store, portfolio, config)
 
 
 def _cmd_mcp(args: argparse.Namespace, config) -> None:
-    from context_kernel.graph.lightrag_adapter import LightRAGStore
-    from context_kernel.ingester.embedder import HttpEmbedder
     from context_kernel.orientation_server import serve
 
     portfolio = config.portfolio_root
-    store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+    store = _build_store(portfolio)
     embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
-    embedder = HttpEmbedder(
-        endpoint=config.ingester.embedder_endpoint,
-        model=config.ingester.embedder_model,
-        dim=config.ingester.embedder_dim,
-        api_key=embedder_key,
-    )
+    embedder = _build_embedder(config, embedder_key)
     serve(portfolio, store, config.orientation, embedder=embedder)
 
 

@@ -108,12 +108,13 @@ def _generate_scope_summary(scope: ScopePath, entities: list[Entity]) -> str:
     )
 
 
-def _compute_graph_commit(entities: list[Entity], relationships: list[Relationship]) -> GraphCommit:
+def _compute_graph_commit(all_files: list[Path], sources_root: Path) -> GraphCommit:
+    """Hash (relative_path, sha256(contents)) pairs sorted by path, per ADR-0008."""
     h = hashlib.sha256()
-    for e in sorted(entities, key=lambda e: e.id):
-        h.update(e.id.encode())
-    for r in sorted(relationships, key=lambda r: (r.source_id, r.target_id)):
-        h.update(f"{r.source_id}:{r.target_id}:{r.kind}".encode())
+    for f in sorted(all_files):
+        rel = str(f.relative_to(sources_root))
+        h.update(rel.encode())
+        h.update(hashlib.sha256(f.read_bytes()).hexdigest().encode())
     return GraphCommit(h.hexdigest())
 
 
@@ -313,7 +314,7 @@ def ingest(
                     log.warning("Failed to process scope %s, skipping", sk, exc_info=True)
     phase4_ms = int((time.monotonic() - t_phase4) * 1000)
 
-    commit = _compute_graph_commit(all_entities, all_relationships)
+    commit = _compute_graph_commit(all_files, sources_root)
     typed_scope_entities = {ScopePath(Path(k)): v for k, v in scope_entities.items()}
     store.upsert(
         commit, all_entities, all_relationships, all_summaries,

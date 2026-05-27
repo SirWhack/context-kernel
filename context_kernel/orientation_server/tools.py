@@ -6,16 +6,49 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from context_kernel.graph.protocol import KnowledgeStore
+from context_kernel.graph.protocol import KnowledgeStore, SearchResult
 from context_kernel.materializer.headers import parse
-from context_kernel.orientation_server.response import _CHARS_PER_TOKEN, assemble
-from context_kernel.orientation_server.similarity import nearest_chunks
 from context_kernel.types import ScopePath
 
 if TYPE_CHECKING:
     from context_kernel.ingester.embedder import Embedder
 
 log = logging.getLogger(__name__)
+
+_CHARS_PER_TOKEN = 4
+
+
+def nearest_chunks(
+    query: str,
+    store: KnowledgeStore,
+    embedder: "Embedder",
+    k: int,
+    scope: ScopePath | None = None,
+) -> list[SearchResult]:
+    """Embed the query and return top-k results by similarity from the hybrid corpus."""
+    query_embedding = embedder.embed(query, mode="query")
+    return store.search_similar(query_embedding, k, scope)
+
+
+def assemble(chunks: list[str], source_paths: list[str], max_tokens: int) -> str:
+    """Concatenate chunks with file-path citations, enforcing the token budget."""
+    budget = max_tokens * _CHARS_PER_TOKEN
+    parts: list[str] = []
+    used = 0
+    for chunk, path in zip(chunks, source_paths):
+        citation = f"\n\n> Source: `{path}`\n"
+        entry = chunk + citation
+        if used + len(entry) > budget and parts:
+            break
+        parts.append(entry)
+        used += len(entry)
+    result = "\n".join(parts)
+    if used > budget:
+        cut = result[:budget]
+        para = cut.rfind("\n\n")
+        if para > budget // 2:
+            result = cut[:para]
+    return result
 
 
 def overview(scope: ScopePath, max_tokens: int, tree_root: Path) -> str:

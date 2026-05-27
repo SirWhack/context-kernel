@@ -37,6 +37,16 @@ def _write_if_changed(path: Path, content: str) -> bool:
     return True
 
 
+def _materialize_claude_bridge(claude_path: Path, written: list[Path]) -> None:
+    claude_rendered = render_claude_md_bridge()
+    if claude_path.exists():
+        claude_pinned, _ = extract(claude_path.read_text(encoding="utf-8"))
+        if claude_pinned:
+            claude_rendered = merge(claude_rendered, claude_pinned)
+    if _write_if_changed(claude_path, claude_rendered):
+        written.append(claude_path)
+
+
 def materialize(
     scope: ScopePath,
     store: KnowledgeStore,
@@ -57,13 +67,7 @@ def materialize(
         existing_header = parse(existing)
         if existing_header and existing_header.graph_commit == gc and existing_header.source_tree_hash == sth:
             written: list[Path] = []
-            claude_rendered = render_claude_md_bridge()
-            if claude_path.exists():
-                claude_pinned, _ = extract(claude_path.read_text(encoding="utf-8"))
-                if claude_pinned:
-                    claude_rendered = merge(claude_rendered, claude_pinned)
-            if _write_if_changed(claude_path, claude_rendered):
-                written.append(claude_path)
+            _materialize_claude_bridge(claude_path, written)
             return written
 
     pinned_blocks = []
@@ -100,13 +104,7 @@ def materialize(
     if _write_if_changed(agents_path, rendered):
         written.append(agents_path)
 
-    claude_rendered = render_claude_md_bridge()
-    if claude_path.exists():
-        claude_pinned, _ = extract(claude_path.read_text(encoding="utf-8"))
-        if claude_pinned:
-            claude_rendered = merge(claude_rendered, claude_pinned)
-    if _write_if_changed(claude_path, claude_rendered):
-        written.append(claude_path)
+    _materialize_claude_bridge(claude_path, written)
 
     if written:
         elapsed = int((time.monotonic() - t0) * 1000)

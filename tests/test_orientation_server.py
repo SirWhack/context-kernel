@@ -11,7 +11,7 @@ from context_kernel.config_store import IngesterConfig
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, SearchResult, Summary
 from context_kernel.ingester import ingest
 from context_kernel.materializer.headers import FreshnessHeader, render
-from context_kernel.orientation_server.response import assemble
+from context_kernel.orientation_server.tools import assemble
 from context_kernel.orientation_server.tools import find, overview
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 

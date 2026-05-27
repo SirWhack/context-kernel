@@ -135,7 +135,7 @@ The MCP surface — two read-only tools (`overview`, `find`) that point coding a
 |---|---|
 | **Contract** | this file §2.5 |
 | **Owns** | MCP tool surface shape (`overview(scope_path, max_tokens) → markdown`, `find(query, scope_path) → markdown`); response token-budget enforcement; embedding-similarity lookup used by `find` (over pre-materialized summary chunks); markdown response format with file-path citations; MCP transport (stdio v1; HTTP deferred) |
-| **Outputs** | MCP `overview` and `find` responses (markdown chunks with source file paths); invokes FreshnessGate before returning any chunk; no mutation, no LLM calls, no on-the-fly graph traversal in the request path |
+| **Outputs** | MCP `overview` and `find` responses (markdown chunks with source file paths); reads are best-effort against the last committed materialization (pre-commit hook keeps them fresh per ADR-0010); no mutation, no LLM calls, no on-the-fly graph traversal in the request path |
 | **Does not own** | Novel content synthesis (`find` returns existing pre-materialized summary chunks — it does not generate new text); cross-session memory (every MCP session starts fresh, no recall of previous queries); exhaustive retrieval (token-budget-capped responses; callers needing more must paginate by scope or query); state mutation (read-only by tool definition; future write tools per invariant 1 would be additive, not retrofitted into existing tools); multi-editor concurrency (stdio v1; HTTP transport deferred — multiple editors today means multiple server processes) |
 
 ### 2.6 AgentCLI
