@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 _STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
 _CHUNK: list[ChunkHandler] = [MarkdownHandler()]
-_DEFAULT_PARALLEL = 2
+_DEFAULT_PARALLEL = 1
 
 
 @dataclass
