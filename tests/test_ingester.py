@@ -6,7 +6,7 @@ from context_kernel.graph.addressing import hash_bytes
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, Relationship, SearchResult, Summary
 from context_kernel.ingester import ingest
 from context_kernel.ingester.blobs import write_embedding, write_summary
-from context_kernel.ingester.change_detection import (
+from context_kernel.change_detection import (
     changed_since,
     discover_scopes,
     source_tree_hash,

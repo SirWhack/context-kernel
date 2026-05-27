@@ -170,7 +170,7 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
 
 
 def _cmd_materialize(args: argparse.Namespace, config) -> None:
-    from context_kernel.ingester.change_detection import discover_scopes
+    from context_kernel.change_detection import discover_scopes
     from context_kernel.materializer import materialize, materialize_view
     from context_kernel.types import ScopePath
 

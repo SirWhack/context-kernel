@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore, Relationship, Summary
 from context_kernel.ingester.blobs import write_embedding, write_summary
-from context_kernel.ingester.change_detection import walk_source_files
+from context_kernel.change_detection import walk_source_files
 from context_kernel.ingester.errors import IngestionError
 from context_kernel.ingester.handlers import (
     ChunkHandler,

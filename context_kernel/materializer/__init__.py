@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from context_kernel.graph.protocol import KnowledgeStore
-from context_kernel.ingester.change_detection import source_tree_hash
+from context_kernel.change_detection import source_tree_hash
 from context_kernel.materializer.errors import MaterializationError
 from context_kernel.materializer.headers import FreshnessHeader, parse, render
 from context_kernel.materializer.pinned import extract, merge
