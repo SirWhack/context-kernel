@@ -1,7 +1,13 @@
 <!-- context-kernel-freshness
-graph: 9ad2cb3895487fe03be33c80ac3097c39bb0bf0fb21d4748c7683f1027c2f470
-source-tree: be31c89f3f380931f8dcfbc4d75fff0c2b919b8d57008b43430146920abc996e
-materialized: 2026-05-27T18:54:52Z
+graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
+source-tree: cd40ea521946a1e272e6af3d7b51b7ad74838cf8f92f49f0baf66363bec52817
+materialized: 2026-05-27T21:06:01Z
 -->
 
-Scope ./: 0 modules, 0 classes, 0 functions. Key interfaces: (none).
+This scope implements the Context Kernel's model-time subsystem, which governs how source documents are ingested into a knowledge graph and materialized into developer-facing documentation. It enforces the core invariant that materialized files (AGENTS.md, CLAUDE.md bridges, and cross-cutting views) are always in sync with their source code at commit boundaries. The scope owns the entire pipeline from source file to readable summary, including the freshness guarantees that make stale reads structurally impossible.
+
+The public API surface consists of two main interfaces. The **Ingester** reads portfolio source files and writes to the **Graph** knowledge store, owning summarization model choice, embedding model choice, entity-extraction prompt templates, and source-format handlers. The **Materializer** reads from the Graph and writes the materialized tree — AGENTS.md per scope, CLAUDE.md bridge files with `@AGENTS.md` imports, and configured views under `.context-kernel/views/`. Both are invoked through the **CLI** (`ck ingest`, `ck materialize`) and the **FreshnessGate**, which runs as a git pre-commit hook that blocks commits on staleness.
+
+Internally, the scope structures around several key components. The **Graph** is the only mutable state, wrapped behind a thin protocol for backend flexibility (v1 uses LightRAG with pluggable storage). The **OrientationServer** exposes an MCP surface (`ck mcp`) with two read-only tools — `overview` and `find` — that point coding agents at materialized files without performing LLM calls or graph traversal. The **FreshnessGate** checks headers containing graph_commit and source-tree hashes, implementing invariant 2 from THEORY.md by making stale reads structurally impossible at the read boundary. The **ConfigStore** loads from `.context-kernel/config.toml` per invocation, with all knobs having defaults and secrets explicitly excluded.
+
+Key design patterns include Parnas-secret interfaces for model choices (summarization and embedding), a pure-function projection from Graph to materialized tree, and a stateless MCP server with no runtime synthesis. The scope rejects pull-based JIT regeneration in favor of pre-commit hook enforcement, and explicitly does not support real-time updates, multi-tenant identity, or HTTP transport in v1. The hybrid corpus for `find` searches lives inside the Graph's vector store, not as a separate artifact.

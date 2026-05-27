@@ -1,11 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regenerate documentation from current source state
-ck ingest --portfolio .
-CHANGED_FILES=$(ck materialize --all)
+PORTFOLIO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CK="${PORTFOLIO_ROOT}/model-time/.venv/bin/ck"
 
-# Stage any materialized files that changed
+if [ -f "${PORTFOLIO_ROOT}/model-time/.env" ]; then
+    set -a
+    source "${PORTFOLIO_ROOT}/model-time/.env"
+    set +a
+fi
+
+"$CK" ingest --portfolio "$PORTFOLIO_ROOT"
+CHANGED_FILES=$("$CK" materialize --all --config "${PORTFOLIO_ROOT}/.context-kernel/config.toml")
+
 if [ -n "$CHANGED_FILES" ]; then
-    echo "$CHANGED_FILES" | xargs git add
+    echo "$CHANGED_FILES" | while read -r f; do
+        # Only stage files within this git repo
+        if [[ "$f" == "$(git rev-parse --show-toplevel)"* ]]; then
+            git add "$f"
+        fi
+    done
 fi
