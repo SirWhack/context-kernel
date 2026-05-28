@@ -21,6 +21,11 @@ dist/
 .ruff_cache/
 .mypy_cache/
 
+# Node / Cloudflare Workers
+node_modules/
+worker-configuration.d.ts
+.dev.vars
+
 # Editors / OS
 .vscode/
 .idea/
