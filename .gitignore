@@ -32,5 +32,5 @@ worker-configuration.d.ts
 .DS_Store
 Thumbs.db
 
-# Local Claude Code settings (project-level settings stay; user-local does not)
-.claude/settings.local.json
+# Claude Code local state
+.claude/
