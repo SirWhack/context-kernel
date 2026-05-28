@@ -1,8 +1,12 @@
 # Context Kernel runtime — opaque per-portfolio operational dir
 .context-kernel/
 
-# Scratch
+# Scratch / working docs (local-only, never committed)
 temp.md
+TODO.md
+HANDOFF.md
+NOTES.md
+SCRATCH.md
 *.swp
 *.swo
 
