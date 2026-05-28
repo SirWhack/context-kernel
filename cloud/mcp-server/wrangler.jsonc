@@ -1,0 +1,33 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "context-kernel-mcp",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-10",
+	"compatibility_flags": ["nodejs_compat"],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MCP_OBJECT",
+				"class_name": "ContextKernelMCP"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["ContextKernelMCP"]
+		}
+	],
+	"kv_namespaces": [
+		{
+			"binding": "SUMMARIES",
+			"id": "9fa4051fa150458c91539765b2af15a4"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	"observability": {
+		"enabled": true
+	}
+}

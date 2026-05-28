@@ -1,0 +1,86 @@
+name: Sync MCP Server
+
+on:
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [sync-mcp]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+    steps:
+      - name: Checkout model-time
+        uses: actions/checkout@v4
+        with:
+          path: model-time
+
+      - name: Checkout evergreenlabs
+        uses: actions/checkout@v4
+        with:
+          repository: SirWhack/evergreenlabs
+          path: evergreenlabs
+          token: ${{ secrets.PORTFOLIO_PAT }}
+
+      - name: Checkout evergreenlabs-bot
+        uses: actions/checkout@v4
+        with:
+          repository: SirWhack/evergreenlabs-bot
+          path: evergreenlabs-bot
+          token: ${{ secrets.PORTFOLIO_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install context-kernel
+        run: |
+          cd model-time
+          pip install -e .
+          pip install requests psycopg2-binary
+
+      - name: Download state from R2
+        run: |
+          python model-time/cloud/mcp-server/r2_sync.py download \
+            --bucket context-kernel-state \
+            --local-dir "$GITHUB_WORKSPACE/.context-kernel" \
+            --portfolio-root "$GITHUB_WORKSPACE"
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+
+      - name: Ingest
+        run: ck ingest --portfolio "$GITHUB_WORKSPACE"
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CF_USER: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_WORKER_AI_TOKEN: ${{ secrets.CF_WORKER_AI_TOKEN }}
+
+      - name: Materialize
+        run: |
+          ck materialize --all \
+            --config "$GITHUB_WORKSPACE/.context-kernel/config.toml"
+
+      - name: Sync to KV + Neon
+        run: |
+          python model-time/cloud/mcp-server/sync.py \
+            --portfolio "$GITHUB_WORKSPACE"
+        env:
+          CF_USER: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.WORKER_TOKEN }}
+          KV_NAMESPACE_ID: "9fa4051fa150458c91539765b2af15a4"
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+      - name: Upload state to R2
+        if: success()
+        run: |
+          python model-time/cloud/mcp-server/r2_sync.py upload \
+            --bucket context-kernel-state \
+            --local-dir "$GITHUB_WORKSPACE/.context-kernel"
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}

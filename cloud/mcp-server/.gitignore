@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.dev.vars
+worker-configuration.d.ts
