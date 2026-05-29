@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from context_kernel.ingester._http import build_client, post_with_retry
 from context_kernel.ingester.handlers import RawEntity, RawRelationship
 
 if TYPE_CHECKING:
@@ -19,7 +20,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = "v2"
+_CACHE_VERSION = "v3"  # bumped: contextual extraction (ADR-0016) changes the prompt
 
 # Entity kinds the LLM is instructed to extract from documentation.
 # See ADR-0013 for rationale on why these 8 and what was cut.
@@ -71,6 +72,13 @@ Given a chunk of technical documentation, extract entities and relationships.
 relationships linking the doc entity to the code construct name.
 - For relationships, source_name and target_name must be entity names from this chunk or \
 well-known code identifiers referenced in the text.
+- CRITICAL: when a concept in the chunk corresponds to an entity in "## Known code entities" \
+below, use that entity's EXACT name as the relationship target_name (and reuse the name rather \
+than inventing a synonym). This is how documentation gets linked to its implementation.
+- Use canonical terms from "## Canonical vocabulary" when they match concepts in the chunk, \
+instead of coining a new name for the same concept.
+- If a claim in the chunk directly contradicts a known code entity (says something is missing/ \
+unbuilt that the code shows exists), extract it with kind "stale-claim".
 
 ## Output format
 Return ONLY valid JSON, no markdown fences, no commentary:
@@ -84,8 +92,9 @@ If the chunk contains no extractable entities, return: {"entities": [], "relatio
 class Summarizer(Protocol):
     """Extract entities and relationships from a source-file chunk."""
 
-    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
-        """Best-effort extraction. Quality is not guaranteed (§2.2 Does not own)."""
+    def summarize(self, text: str, *, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]]:
+        """Best-effort extraction. `context` is the ADR-0016 prefix (known code entities,
+        canonical vocabulary, source metadata). Quality is not guaranteed (§2.2 Does not own)."""
         ...
 
     def summarize_scope(self, scope_name: str, entity_descriptions: list[str]) -> str | None:
@@ -154,8 +163,10 @@ that helps an agent or engineer understand:
 """
 
 
-def _cache_key(text: str, model: str) -> str:
-    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{text}".encode()).hexdigest()
+def _cache_key(text: str, model: str, context: str = "") -> str:
+    # context is part of the prompt (ADR-0016), so it must key the cache: changing the
+    # known-code-entity prefix must invalidate doc extractions that depended on it.
+    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{context}:{text}".encode()).hexdigest()
 
 
 class LLMSummarizer:
@@ -179,6 +190,7 @@ class LLMSummarizer:
         self._cache_dir = cache_dir
         self._api_key = api_key
         self._metrics = metrics
+        self._client = build_client(timeout=120.0)
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_hits = 0
@@ -189,8 +201,8 @@ class LLMSummarizer:
             return None
         return self._cache_dir / f"{key}.json"
 
-    def _read_cache(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]] | None:
-        path = self._cache_path(_cache_key(text, self._model))
+    def _read_cache(self, text: str, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]] | None:
+        path = self._cache_path(_cache_key(text, self._model, context))
         if path is None or not path.exists():
             return None
         try:
@@ -201,8 +213,8 @@ class LLMSummarizer:
         except Exception:
             return None
 
-    def _write_cache(self, text: str, entities: list[RawEntity], relationships: list[RawRelationship]) -> None:
-        path = self._cache_path(_cache_key(text, self._model))
+    def _write_cache(self, text: str, entities: list[RawEntity], relationships: list[RawRelationship], context: str = "") -> None:
+        path = self._cache_path(_cache_key(text, self._model, context))
         if path is None:
             return
         data = {
@@ -212,8 +224,6 @@ class LLMSummarizer:
         path.write_text(json.dumps(data), encoding="utf-8")
 
     def _chat(self, system: str, user: str, max_tokens: int = 2048) -> str | None:
-        import httpx
-
         headers: dict[str, str] = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -225,21 +235,26 @@ class LLMSummarizer:
                 {"role": "user", "content": user},
             ],
             "temperature": 0.1,
-            "max_tokens": max_tokens,
         }
+
+        # OpenAI/Azure reasoning models (gpt-5.x, o-series) reject `max_tokens`
+        # and require `max_completion_tokens`. Local llama.cpp / deepseek use `max_tokens`.
+        if self._model.startswith(("gpt-5", "o1", "o3", "o4")):
+            body["max_completion_tokens"] = max_tokens
+        else:
+            body["max_tokens"] = max_tokens
 
         if self._model.startswith("deepseek"):
             body["thinking"] = {"type": "disabled"}
 
         t0 = time.monotonic()
         try:
-            resp = httpx.post(
+            resp = post_with_retry(
+                self._client,
                 f"{self._endpoint}/chat/completions",
                 json=body,
                 headers=headers or None,
-                timeout=120.0,
             )
-            resp.raise_for_status()
             data = resp.json()
             elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -272,8 +287,8 @@ class LLMSummarizer:
             log.warning("LLM call failed (system prompt len=%d, user len=%d)", len(system), len(user), exc_info=True)
             return None
 
-    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
-        cached = self._read_cache(text)
+    def summarize(self, text: str, *, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]]:
+        cached = self._read_cache(text, context)
         if cached is not None:
             self._cache_hits += 1
             if self._metrics:
@@ -284,12 +299,15 @@ class LLMSummarizer:
         if self._metrics:
             self._metrics.record_cache_miss()
 
-        content = self._chat(_SYSTEM_PROMPT, text)
+        # ADR-0016: prepend the run-constant context (known code entities, vocabulary,
+        # source metadata) so the LLM references real identifiers and canonical terms.
+        user = f"{context}\n\n## Chunk to extract from\n{text}" if context else text
+        content = self._chat(_SYSTEM_PROMPT, user)
         if content is None:
             return [], []
 
         entities, relationships = _parse_llm_response(content)
-        self._write_cache(text, entities, relationships)
+        self._write_cache(text, entities, relationships, context)
         return entities, relationships
 
     def summarize_scope(self, scope_name: str, entity_descriptions: list[str]) -> str | None:

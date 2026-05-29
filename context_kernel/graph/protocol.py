@@ -16,12 +16,20 @@ from context_kernel.types import GraphCommit, ScopePath, Sha256
 
 @dataclass(frozen=True)
 class Entity:
-    """A LightRAG-extracted entity. ID is stable only within one GraphCommit."""
+    """A resolved entity (ADR-0017). ID is identity-derived; stable only within one GraphCommit.
+
+    A canonical node may merge a code definition with the docs/ADRs that describe it:
+    `aliases` are the surface names that merged, `sources` the files they came from,
+    `kinds` the secondary kinds (the primary `kind` is code-authoritative when present).
+    """
 
     id: str
     name: str
     kind: str
     description: str
+    aliases: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
+    kinds: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,7 @@
 """Decide which source files need re-ingesting. Unchanged source = no-op per invariant 4."""
 
 import hashlib
+import os
 from pathlib import Path
 
 from context_kernel.types import GraphCommit, Sha256, ScopePath
@@ -8,11 +9,25 @@ from context_kernel.types import GraphCommit, Sha256, ScopePath
 _EXCLUDED_DIRS = frozenset({".git", ".context-kernel", "node_modules", "__pycache__"})
 _MATERIALIZED_FILES = frozenset({"AGENTS.md", "CLAUDE.md"})
 
+# Extra directory names to exclude, set per-invocation via the environment.
+# Comma-separated, e.g. CK_EXTRA_EXCLUDED_DIRS="data,assets,deploy". Dotdirs
+# (.git, .venv, .context-kernel, ...) are already excluded unconditionally.
+_EXTRA_EXCLUDED_DIRS = frozenset(
+    name.strip()
+    for name in os.environ.get("CK_EXTRA_EXCLUDED_DIRS", "").split(",")
+    if name.strip()
+)
+
 
 def _is_excluded(path: Path) -> bool:
     if path.name in _MATERIALIZED_FILES:
         return True
-    return any(part in _EXCLUDED_DIRS or (part.startswith(".") and part not in {"."}) for part in path.parts)
+    return any(
+        part in _EXCLUDED_DIRS
+        or part in _EXTRA_EXCLUDED_DIRS
+        or (part.startswith(".") and part not in {"."})
+        for part in path.parts
+    )
 
 
 def walk_source_files(root: Path) -> list[Path]:

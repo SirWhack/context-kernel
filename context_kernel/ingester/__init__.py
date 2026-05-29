@@ -2,8 +2,9 @@
 
 import hashlib
 import logging
+import struct
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,9 @@ from typing import TYPE_CHECKING
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore, Relationship, Summary
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import walk_source_files
+from context_kernel.ingester.entity_resolver import (
+    CODE_EXT, ExtractedEntity, ExtractedRelationship, resolve as resolve_entities,
+)
 from context_kernel.ingester.errors import IngestionError
 from context_kernel.ingester.handlers import (
     ChunkHandler,
@@ -36,6 +40,76 @@ log = logging.getLogger(__name__)
 
 _STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
 _CHUNK: list[ChunkHandler] = [MarkdownHandler()]
+
+# Entities embedded per /embeddings round-trip in Phase 3.
+_EMBED_BATCH = 96
+
+
+def _embed_many(embedder: "Embedder", texts: list[str], *, mode: str = "passage") -> list[bytes]:
+    """Embed many texts in one call when the embedder supports it, else fall back."""
+    batch_fn = getattr(embedder, "embed_batch", None)
+    if batch_fn is not None:
+        return batch_fn(texts, mode=mode)
+    return [embedder.embed(t, mode=mode) for t in texts]
+
+
+_CHARS_PER_TOKEN = 4
+_KIND_WEIGHT = {"module": 3, "class": 2, "function": 1}
+
+
+def _build_code_context(code_entities, relationships, budget_tokens: int) -> str:
+    """ADR-0016 §1: a centrality-ranked, token-capped list of known code entities so the
+    doc extractor can reference real identifiers instead of inventing synonyms."""
+    if not code_entities:
+        return ""
+    degree: Counter = Counter()
+    for r in relationships:
+        degree[r.source_name] += 1
+        degree[r.target_name] += 1
+    ranked = sorted(
+        code_entities,
+        key=lambda e: degree.get(e.name, 0) * 2 + _KIND_WEIGHT.get(e.kind, 0),
+        reverse=True,
+    )
+    budget = budget_tokens * _CHARS_PER_TOKEN
+    lines: list[str] = []
+    used = 0
+    seen: set[tuple[str, str]] = set()
+    for e in ranked:
+        key = (e.name, e.source_file)
+        if key in seen:
+            continue
+        seen.add(key)
+        line = f"- {e.name} ({e.kind}, {e.source_file})"
+        if used + len(line) > budget:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "## Known code entities\n" + "\n".join(lines) if lines else ""
+
+
+def _build_vocab_context(sources_root: Path, budget_tokens: int) -> str:
+    """ADR-0016 §2: canonical vocabulary from CONTEXT.md so the extractor uses settled terms."""
+    ctx_path = sources_root / "CONTEXT.md"
+    if not ctx_path.exists():
+        return ""
+    try:
+        text = ctx_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    budget = budget_tokens * _CHARS_PER_TOKEN
+    out: list[str] = []
+    used = 0
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith(("- ", "* ", "#")) or "**" in s or " — " in s or (": " in s and len(s) < 200):
+            if used + len(line) > budget:
+                break
+            out.append(line)
+            used += len(line) + 1
+    return "## Canonical vocabulary\n" + "\n".join(out) if out else ""
 
 
 @dataclass
@@ -142,121 +216,133 @@ def ingest(
         store.upsert(commit, [], [], [])
         return commit
 
-    all_entities: list[Entity] = []
-    all_relationships: list[Relationship] = []
     all_chunks: list[EmbeddedChunk] = []
-    scope_entities: dict[str, list[Entity]] = defaultdict(list)
-    entity_source: dict[str, str] = {}  # entity_id → rel_path
-    entity_scope: dict[str, str] = {}  # entity_id → scope_key
+
+    def _scope_of(source_file: str) -> str:
+        parent = str(Path(source_file).parent)
+        return str(Path(project_name) / parent) if project_name else parent
 
     # Partition files by handler type: structured (instant) vs chunk (LLM-dependent)
-    structured_files: list[tuple[Path, str, str, StructuredHandler]] = []
-    chunk_files: list[tuple[Path, str, str, ChunkHandler]] = []
-
+    structured_files: list[tuple[Path, str, StructuredHandler]] = []
+    chunk_files: list[tuple[Path, str, ChunkHandler]] = []
     for file_path in all_files:
         rel_path = str(file_path.relative_to(sources_root))
-        scope_key = str(file_path.parent.relative_to(sources_root))
-        if project_name:
-            scope_key = str(Path(project_name) / scope_key)
-
-        matched = False
-        for handler in _STRUCTURED:
-            if handler.supports(file_path):
-                structured_files.append((file_path, rel_path, scope_key, handler))
-                matched = True
-                break
-        if matched:
+        handler = next((h for h in _STRUCTURED if h.supports(file_path)), None)
+        if handler:
+            structured_files.append((file_path, rel_path, handler))
             continue
-        for handler in _CHUNK:
-            if handler.supports(file_path):
-                chunk_files.append((file_path, rel_path, scope_key, handler))
-                break
+        chandler = next((h for h in _CHUNK if h.supports(file_path)), None)
+        if chandler:
+            chunk_files.append((file_path, rel_path, chandler))
 
-    # Phase 1: Process structured files (instant — no LLM, no parallelism needed)
+    # Phases 1+2 now COLLECT raw extractions (with provenance); resolution is global (ADR-0017).
+    raw_entities: list[ExtractedEntity] = []
+    raw_relationships: list[ExtractedRelationship] = []
+
+    # Phase 1: structured files (instant — no LLM)
     t_phase1 = time.monotonic()
-    for file_path, rel_path, scope_key, handler in structured_files:
-        raw_ents, raw_rels = handler.extract(file_path)
-        if raw_ents:
-            entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path, project_name)
-            all_entities.extend(entities)
-            all_relationships.extend(relationships)
-            scope_entities[scope_key].extend(entities)
-            for entity in entities:
-                entity_source[entity.id] = rel_path
-                entity_scope[entity.id] = scope_key
+    for file_path, rel_path, handler in structured_files:
+        re_, rr_ = handler.extract(file_path)
+        raw_entities += [ExtractedEntity(e.name, e.kind, rel_path, e.description) for e in re_]
+        raw_relationships += [ExtractedRelationship(r.source_name, r.target_name, r.kind, rel_path, r.description) for r in rr_]
     phase1_ms = int((time.monotonic() - t_phase1) * 1000)
 
-    # Phase 2: Process chunk files (LLM-dependent — parallelized at chunk level)
+    # ADR-0016: build the run-constant extraction context (known code entities + vocabulary)
+    # from Phase-1 output. Constant across all chunk calls in this run → prompt-cache friendly.
+    run_context = ""
+    if config.contextual_extraction and summarizer is not None:
+        code_ents = [e for e in raw_entities if e.source_file.endswith(CODE_EXT)]
+        parts = [p for p in (
+            _build_code_context(code_ents, raw_relationships, config.code_context_tokens),
+            _build_vocab_context(sources_root, 1200),
+        ) if p]
+        run_context = "\n\n".join(parts)
+
+    def _chunk_context(rel_path: str) -> str:
+        if not run_context:
+            return ""
+        return f"{run_context}\n\n## Source\nFile: {rel_path}"
+
+    # Phase 2: chunk files (LLM-dependent — parallelized at chunk level)
     t_phase2 = time.monotonic()
-
-    # Flatten all chunks across files into individual work items
-    _ChunkItem = tuple[str, str, str]  # (chunk_text, rel_path, scope_key)
-    chunk_items: list[_ChunkItem] = []
-    for file_path, rel_path, scope_key, handler in chunk_files:
+    chunk_items: list[tuple[str, str]] = []  # (chunk_text, rel_path)
+    for file_path, rel_path, handler in chunk_files:
         for chunk_text in handler.chunks(file_path):
-            chunk_items.append((chunk_text, rel_path, scope_key))
+            chunk_items.append((chunk_text, rel_path))
 
-    def _process_chunk(item: _ChunkItem) -> _FileResult:
-        chunk_text, rel_path, scope_key = item
-        result = _FileResult(rel_path=rel_path, scope_key=scope_key)
-        raw_ents, raw_rels = summarizer.summarize(chunk_text)
-        entities, relationships = _resolve_raw_entities(raw_ents, raw_rels, rel_path, project_name)
-        result.entities.extend(entities)
-        result.relationships.extend(relationships)
-
-        if embedder is not None:
-            embedding = embedder.embed(chunk_text)
-            write_embedding(blob_root, embedding)
-        return result
+    def _process_chunk(item: tuple[str, str]):
+        chunk_text, rel_path = item
+        re_, rr_ = summarizer.summarize(chunk_text, context=_chunk_context(rel_path))
+        ents = [ExtractedEntity(e.name, e.kind, rel_path, e.description) for e in re_]
+        rels = [ExtractedRelationship(r.source_name, r.target_name, r.kind, rel_path, r.description) for r in rr_]
+        return ents, rels
 
     if chunk_items and summarizer is not None:
         n_workers = min(n_parallel, len(chunk_items))
         with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            futures = {
-                pool.submit(_process_chunk, item): item
-                for item in chunk_items
-            }
+            futures = {pool.submit(_process_chunk, item): item for item in chunk_items}
             for future in as_completed(futures):
-                item = futures[future]
                 try:
-                    result = future.result()
-                    all_entities.extend(result.entities)
-                    all_relationships.extend(result.relationships)
-                    scope_entities[result.scope_key].extend(result.entities)
-                    for entity in result.entities:
-                        entity_source[entity.id] = result.rel_path
-                        entity_scope[entity.id] = result.scope_key
+                    ents, rels = future.result()
+                    raw_entities += ents
+                    raw_relationships += rels
                 except Exception:
-                    log.warning("Failed to process chunk from %s, skipping", item[1], exc_info=True)
-    elif chunk_files:
-        for file_path, rel_path, scope_key, handler in chunk_files:
+                    log.warning("Failed to process chunk from %s, skipping", futures[future][1], exc_info=True)
+    elif chunk_files and summarizer is None:
+        for _, rel_path, _h in chunk_files:
             log.warning("No summarizer configured, skipping %s", rel_path)
     phase2_ms = int((time.monotonic() - t_phase2) * 1000)
 
-    # Phase 3: Embed entity descriptions (parallelized)
+    # Phase 2.5: embed raw entity descriptions BEFORE resolution — embeddings are the
+    # collision guard's second signal (ADR-0017) and become the canonical node embeddings.
     t_phase3 = time.monotonic()
-    if embedder is not None and all_entities:
-        def _embed_entity(entity: Entity) -> EmbeddedChunk | None:
+    if embedder is not None and raw_entities:
+        def _embed_raw_batch(batch: list[ExtractedEntity]) -> list[bytes | None]:
             try:
-                emb = embedder.embed(entity.description, mode="passage")
-                write_embedding(blob_root, emb)
-                return EmbeddedChunk(
-                    id=entity.id,
-                    embedding=emb,
-                    chunk_text=entity.description,
-                    source_path=entity_source.get(entity.id, ""),
-                    kind="entity",
-                    scope=ScopePath(Path(entity_scope.get(entity.id, "."))),
-                )
+                return _embed_many(embedder, [e.description for e in batch], mode="passage")
             except Exception:
-                log.warning("Failed to embed entity %s, skipping", entity.name)
-                return None
+                log.warning("Failed to embed entity batch of %d, skipping", len(batch), exc_info=True)
+                return [None] * len(batch)
 
-        n_workers = min(n_parallel, len(all_entities))
-        with ThreadPoolExecutor(max_workers=n_workers) as pool:
-            for chunk in pool.map(_embed_entity, all_entities):
-                if chunk is not None:
-                    all_chunks.append(chunk)
+        batches = [raw_entities[i:i + _EMBED_BATCH] for i in range(0, len(raw_entities), _EMBED_BATCH)]
+        with ThreadPoolExecutor(max_workers=min(n_parallel, len(batches))) as pool:
+            for batch, embs in zip(batches, pool.map(_embed_raw_batch, batches)):
+                for e, emb in zip(batch, embs):
+                    if emb:
+                        e.embedding = struct.unpack(f"{len(emb) // 4}f", emb)
+
+    # Phase 3: resolve raw extractions into canonical, code-anchored nodes (ADR-0017).
+    canonical, resolved_rels, rstats = resolve_entities(
+        raw_entities, raw_relationships, project=project_name,
+    )
+    log.info("entity_resolution", extra=rstats)
+
+    all_entities: list[Entity] = []
+    all_relationships = [
+        Relationship(source_id=r.source_id, target_id=r.target_id, kind=r.kind, description=r.description)
+        for r in resolved_rels
+    ]
+    scope_entities: dict[str, list[Entity]] = defaultdict(list)
+    seen_in_scope: dict[str, set[str]] = defaultdict(set)
+    for c in canonical:
+        ent = Entity(
+            id=c.id, name=c.name, kind=c.kind, description=c.description,
+            aliases=tuple(c.aliases), sources=tuple(c.sources), kinds=tuple(c.kinds),
+        )
+        all_entities.append(ent)
+        if c.embedding is not None:
+            emb_bytes = struct.pack(f"{len(c.embedding)}f", *c.embedding)
+            write_embedding(blob_root, emb_bytes)
+            code_src = next((s for s in c.sources if s.endswith(CODE_EXT)), (c.sources[0] if c.sources else ""))
+            all_chunks.append(EmbeddedChunk(
+                id=c.id, embedding=emb_bytes, chunk_text=c.description,
+                source_path=code_src, kind="entity", scope=ScopePath(Path(_scope_of(code_src))),
+            ))
+        for src in (c.sources or [""]):
+            sk = _scope_of(src)
+            if ent.id not in seen_in_scope[sk]:
+                seen_in_scope[sk].add(ent.id)
+                scope_entities[sk].append(ent)
     phase3_ms = int((time.monotonic() - t_phase3) * 1000)
 
     # Phase 4: Generate per-scope summaries (ADR-0007: LLM second pass when available, parallelized)

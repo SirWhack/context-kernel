@@ -929,7 +929,12 @@ class TestIngestPython:
 class _FakeSummarizer:
     """Mock summarizer that returns canned entities for any chunk."""
 
-    def summarize(self, text: str) -> tuple[list[RawEntity], list[RawRelationship]]:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def summarize(self, text: str, *, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]]:
+        self.calls.append(text)
+        self.last_context = context
         entities = [RawEntity(name="mock-entity", kind="decision", description=f"Extracted from: {text[:50]}")]
         return entities, []
 
@@ -971,7 +976,20 @@ class TestIngestMarkdownWithSummarizer:
         store = _FakeStore()
         summarizer = _FakeSummarizer()
         ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=summarizer)
-        assert len(store.entities) >= 2
+        # Heading path reaches the summarizer as chunk context (entities may merge by name).
+        assert any("Thesis" in t for t in summarizer.calls)
+        assert any("Non-goals" in t for t in summarizer.calls)
+
+    def test_code_entities_reach_doc_extractor(self, tmp_path):
+        # ADR-0016: Phase-1 code entities are fed into the Phase-2 extraction context.
+        (tmp_path / "circuit_breaker.py").write_text("class CircuitBreaker:\n    def trip(self): ...\n")
+        (tmp_path / "design.md").write_text("# Design\n\nThe pipeline uses a circuit breaker on outage.\n")
+        store = _FakeStore()
+        summarizer = _FakeSummarizer()
+        ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=summarizer)
+        assert summarizer.last_context  # non-empty context was passed
+        assert "## Known code entities" in summarizer.last_context
+        assert "CircuitBreaker" in summarizer.last_context
 
     def test_md_and_py_together_with_summarizer(self, tmp_path):
         (tmp_path / "design.md").write_text("# Design\n\nSome design context.\n")

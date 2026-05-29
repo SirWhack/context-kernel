@@ -32,6 +32,8 @@ class IngesterConfig:
     parallel_requests: int = 1
     summarizer_api_key_env: str = "DEEPSEEK_API_KEY"
     embedder_api_key_env: str = "CF_WORKER_AI_TOKEN"
+    contextual_extraction: bool = True   # ADR-0016: feed code entities + vocab into doc extraction
+    code_context_tokens: int = 2000      # token budget for the known-code-entities prefix
 
 
 @dataclass(frozen=True)
@@ -110,7 +112,7 @@ def load(config_path: Path | None = None) -> Config:
         k: v for k, v in ingester_raw.items()
         if k in IngesterConfig.__dataclass_fields__
     }
-    for key in ("summarizer_endpoint", "embedder_endpoint"):
+    for key in ("summarizer_endpoint", "embedder_endpoint", "summarizer_model", "embedder_model"):
         if key in ingester_kwargs:
             ingester_kwargs[key] = os.path.expandvars(ingester_kwargs[key])
 

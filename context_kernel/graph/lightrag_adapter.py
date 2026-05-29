@@ -63,7 +63,12 @@ class LightRAGStore(KnowledgeStore):
         self._commit = GraphCommit(raw["commit"])
 
         self._entities = {
-            e["id"]: Entity(id=e["id"], name=e["name"], kind=e["kind"], description=e["description"])
+            e["id"]: Entity(
+                id=e["id"], name=e["name"], kind=e["kind"], description=e["description"],
+                aliases=tuple(e.get("aliases", ())),
+                sources=tuple(e.get("sources", ())),
+                kinds=tuple(e.get("kinds", ())),
+            )
             for e in raw.get("entities", [])
         }
         raw_rels = [
@@ -105,7 +110,8 @@ class LightRAGStore(KnowledgeStore):
         raw = {
             "commit": str(self._commit),
             "entities": [
-                {"id": e.id, "name": e.name, "kind": e.kind, "description": e.description}
+                {"id": e.id, "name": e.name, "kind": e.kind, "description": e.description,
+                 "aliases": list(e.aliases), "sources": list(e.sources), "kinds": list(e.kinds)}
                 for e in self._entities.values()
             ],
             "relationships": [
