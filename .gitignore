@@ -2,13 +2,7 @@
 .context-kernel/
 
 # Scratch / working docs (local-only, never committed)
-temp.md
-TODO.md
-HANDOFF.md
-NOTES.md
-SCRATCH.md
-*.swp
-*.swo
+
 
 # Python (when implementation starts)
 __pycache__/

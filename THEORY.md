@@ -51,6 +51,45 @@ C4Context
 
 - **No eval harness in v1.** No automated benchmark of "did the agent get a better answer because Context Kernel was in the loop." Demoability and self-dogfooding are the v1 success bar.
 
+## Candidate thesis expansion — product category (proposed 2026-05-29, not yet adopted)
+
+Recorded as the north-star product category this line of work is circling, **not** adopted into the
+Thesis above. Working notes in `THOUGHTS.md` (scratch). Promote to the Thesis — with a revision-log
+entry — only once measured.
+
+> **The Context Kernel is the externalized, queryable theory of the codebase** — the engineer's
+> conceptual model made into a graph, indexed by the concepts you care about, kept in sync at commit
+> time, so any question posed in concepts resolves to precise code without search or synthesis.
+
+This sharpens the current thesis ("context at one altitude doesn't compose into another") onto a
+**second, orthogonal axis**:
+
+- **Structural axis (containment):** portfolio ⊃ project ⊃ scope ⊃ file ⊃ symbol — derived
+  deterministically from AST + code-anchoring (ADR-0017). Answers *what is in here*.
+- **Conceptual axis (aspect):** concepts that cross-cut the structural tree at whatever altitude
+  their instances appear. A concept's scope is the **emergent span of its edges**, not a fixed tier
+  (correcting an earlier "concepts are portfolio-scoped" mis-step). Answers *where does this concern
+  live*.
+
+Two kinds of concept, different grounding, different edge semantics:
+
+- **entity-concept** (a step-panel, a session): a symbol *is* an instance → `implemented-by` →
+  groundable deterministically against a curated alias list.
+- **aspect-concept** (concurrency, error-handling, security): a symbol *participates in* it →
+  `participates-in` → never named in code (no `class Concurrency`), so populated by **interpretive
+  classification at ingest**, not name-match or cosine.
+
+Implies a third query primitive beside `overview`/`find`: **`resolve-concept`** — return a concept
+node's neighbors, pre-materialized (honors invariant 3, no runtime LLM/cosine). Ties to the Naur
+foundation (`docs/adr/`): the concept→code map *is* the program's theory — it lives in the
+engineer's head and nowhere in the code; this externalizes it.
+
+Load-bearing risks: (1) the ontology is a curated, finite, operator-maintained artifact (you index
+what you query repeatedly, not all of meaning) and becomes a **new rot surface**; (2) **annotations
+must never be load-bearing** — if a concern is findable only because someone hand-tagged it, this
+collapses into a comment-convention linter that `grep` + discipline already approximates. The bet is
+that *deriving* the map mechanically beats letting human tagging discipline rot.
+
 ## Open questions
 
 - **Does cross-project insight surfacing require entity merging?** Non-goal (2) defers entity merging to v2. If view-based surfacing (e.g. `by-topic/auth.md` listing every scope tagged `auth` across projects) is enough to deliver cross-project context, the deferral is fine. If real cross-project insight requires unifying entities (recognizing that `Customer` in project-a and `User` in project-b are the same concept), then v2 is doing thesis-level work, and v1 isn't actually testing the thesis — it's testing a single-project version of it. Future ADR.
