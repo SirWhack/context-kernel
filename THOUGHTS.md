@@ -4,6 +4,12 @@
 `THEORY.md` (as a sharpened open question) or to an ADR (as a closed decision). Until a claim
 is measured, it stays here. No project-specific data in this file — pure mechanics.
 
+**Current focus (2026-05-29):** working out whether the kernel should carry a *concept layer* above
+the code-anchored graph (ADR-0017) — concepts as cross-cutting hubs that bridge implementations
+across files and languages, making the kernel "the externalized, queryable theory of the codebase"
+(THEORY.md candidate expansion). Reasoned to ~90%; the next move is the spike in
+`thoughts-spiked.md` (run locally), **not** more theory.
+
 ## The question we keep circling
 
 Three framings of one problem:
