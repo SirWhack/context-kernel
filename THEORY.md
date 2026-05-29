@@ -90,6 +90,18 @@ must never be load-bearing** — if a concern is findable only because someone h
 collapses into a comment-convention linter that `grep` + discipline already approximates. The bet is
 that *deriving* the map mechanically beats letting human tagging discipline rot.
 
+**Why the conceptual axis is what bridges languages (the mechanism — [ADR-0018](./docs/adr/0018-evidence-anchored-concept-edges.md)).**
+Code-anchoring (ADR-0017) relates code to code, but the implementation of a problem in TypeScript, Python, or C# is mechanically
+different — the *only* thing that relates them is the concept. ADR-0018 makes that concrete: a concept
+node stays **language-neutral**, while its evidence is a set of **CodeSpans** — the precise source
+lines (a `asyncio.Lock` here, a `Mutex`/`Promise.all` there) that instantiate it. The spans are
+exactly where language-specificity lives and where the bridge attaches: the concept is the joint,
+the spans are language-specific legs, and they are *allowed* to look nothing alike because they are
+leaves, not the joint. This is the answer to "what mechanically relates a frontend `StepPanel` and a
+backend one" — not shared code, but shared concept with per-language evidence. It also restates risk
+(2) as a property: a span is *derived* from source (delete the primitive, the span and the membership
+it justified decay), so the bridge can never silently rot into a hand-tag.
+
 ## Open questions
 
 - **Does cross-project insight surfacing require entity merging?** Non-goal (2) defers entity merging to v2. If view-based surfacing (e.g. `by-topic/auth.md` listing every scope tagged `auth` across projects) is enough to deliver cross-project context, the deferral is fine. If real cross-project insight requires unifying entities (recognizing that `Customer` in project-a and `User` in project-b are the same concept), then v2 is doing thesis-level work, and v1 isn't actually testing the thesis — it's testing a single-project version of it. Future ADR.

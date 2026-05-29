@@ -2,7 +2,8 @@
 .context-kernel/
 
 # Scratch / working docs (local-only, never committed)
-
+# H2 spike artifacts — session logs, prompts, notes, review (all local, contain corpus data)
+h2-*
 
 # Python (when implementation starts)
 __pycache__/

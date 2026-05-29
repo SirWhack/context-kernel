@@ -166,6 +166,28 @@ sanitization discipline as the existing scripts.
 - Any change to the structural layer / [ADR-0017](./docs/adr/0017-entity-resolution-identity-merging.md)
   — it works; leave it.
 
+## Spike results — round 1 (2026-05-29)
+
+Run against an existing ingested graph (no re-ingest) of a real **single-language** corpus
+(Python + Markdown, ~7.3k entities / 4.2k typed edges). Scripts: `concept_spike.py` (deterministic),
+`concept_classify.py` (LLM precision stage). Corpus identity omitted.
+
+- **H1 (entity recall): strong.** 8/8 hand-authored entity-concepts bridged code AND docs by
+  deterministic alias-match — each assembled its implementation + 4–13 docs/ADRs into one
+  traversable hub. Bounded by a corpus ceiling: only **~12%** of code symbols are ever named in
+  docs; the rest is the classifier/constructor's job.
+- **H3 (aspect precision): proxy unusable, LLM stage rescues it.** Keyword-only precision ranged
+  **0.08–0.69** (0.08 authentication, 0.11 concurrency, 0.47 error-handling, 0.69 evaluation); the
+  constrained LLM judge dropped 53–92% of keyword candidates as false positives, leaving clean sets.
+  → confirms gap 3 (no deterministic guard for aspects) AND validates the coarse-recall→precision
+  pipeline. Precision tracks vocabulary distinctiveness — consistent with AOP separability.
+- **H4 (topology): navigable.** concepts-per-symbol {1:587, 2:97, 3:12, 4:1}; entity-concepts tight
+  (1–6 nodes).
+- **Decision-matrix landing:** *entity strong (ship, deterministic) / aspect needs the LLM precision
+  stage + confidence (ADR-0015)* — the predicted partial-win cell. Keyword grounding alone is not viable.
+- **Not yet run:** H2 (vs prose+grep baseline — needs hand-labeled gold); full-coverage classify
+  (this was a 36/aspect sample); cold-start LLM nomination (`concept_propose.py --execute`).
+
 ## Effort
 
 - **Minimum viable spike (H1 + H2 + H3 + H4):** gold-labeling (hours) + `concept_spike.py` (alias

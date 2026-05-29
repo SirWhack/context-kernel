@@ -211,6 +211,141 @@ classification) without **requiring** a proprietary syntax. Dependency runs
 kernel-derives-from-code, never code-must-feed-kernel. The day it flips, "good practice would just
 solve this" becomes true.
 
+## Ontology design — prior-art-informed (2026-05-29)
+
+From a research pass over feature-location, industry code KGs, ontology engineering, AOP, and
+LLM-era grounding. Bottom line: the one field that tried our exact problem corroborates our hardest
+finding, and the apex pattern is mature in the neighboring field even though no code KG has it.
+
+**What the prior art confirms**
+
+- **Feature/Concept Location** (SE research, ~2005–2019; Dit/Poshyvanyk survey 2013) is *our exact
+  problem* — mapping a human concept to scattered code. Its 15-year settled conclusion: text/IR
+  similarity alone **fails** on the **vocabulary-mismatch problem** (Furnas: two people name a thing
+  the same <20% of the time) and must be fused with structure. **Independent corroboration of our
+  0.42.** The **SITIR** pattern (Liu et al., ASE 2007) — IR used only to rank *within* a
+  structurally-determined candidate set — is exactly our coarse-recall→precision pipeline.
+- **No industry code KG models concepts above symbols** — Kythe, Glean, SCIP/LSIF, CodeQL, Stack
+  Graphs are all symbol/reference graphs. Our deterministic spine *is* the state of the art; the
+  concept apex is novel (no incumbent to copy, nobody solved our rot/granularity for us). Kythe's
+  one-global-schema vs Glean's per-language → for cross-cutting, language-agnostic concepts, use
+  **one shared vocabulary**, not per-project dialects.
+- **AOP** validates the entity/aspect split: class-vs-aspect = "a symbol IS this" vs "this cuts
+  across symbols" (scattering + tangling). An aspect-concept's grounding is a **pointcut** — a
+  predicate selecting symbols — which is exactly what `concept_classify.py`'s LLM judge is.
+- **Closed-vocabulary constrained generation** is the documented strongest hallucination guard, and
+  the best LLM ontology-typing systems (LLMs4OL) constrain output to a candidate set — validating
+  the propose-and-drop in `concept_classify.py`.
+
+**Design decisions this drives**
+
+1. **Adopt the SKOS shape** (don't invent a schema): `prefLabel` + `altLabel` (our alias list is
+   literally altLabels), `definition`/scopeNote (added to the aspects), `broader`/`narrower`
+   (granularity hierarchy), `related`. (w3.org/TR/skos-reference)
+2. **Granularity test = separability under grounding** (AOP): "concurrency" is one concept or four
+   depending on whether the grounder can select recognizably *different* symbol sets. If the LLM
+   judge can't tell `locking` from `async-scheduling`, they're one; if it can, split via `narrower`.
+   Operational, not a priori — answers gap 7.
+3. **Cold-start = propose-then-curate, mine STRUCTURE not prose.** Seed candidates from identifier
+   tokens / path segments / module names (vocab the operator definitely uses) + the doc-mention
+   ranking the discovery pass already did; LLM nominates labels + aliases + draft hierarchy; operator
+   accepts/edits. Do NOT mine prose for concepts then embed-match (the 0.42 path). Never auto-adopt.
+   (AIO / ODK "AI-assisted curation" precedent, arxiv 2404.03044) — answers gap 8 cold-start.
+4. **Rot model — make rot visible, don't prevent it:** entity-concepts **auto-heal** (deterministic
+   alias-match breaks on rename/delete → surface "concept X grounds to 0 symbols" as a FreshnessGate
+   signal); aspect-concepts use content-addressed caching, re-classify only changed symbols; the real
+   rot surface is **new-vocabulary drift** → periodically LLM-nominate over newly-added symbols into a
+   human review queue. Never auto-mutate the vocabulary — answers gap 8 maintenance.
+5. **LLM proposes concepts well, relations poorly** — trust LLM membership (cheap); human-review the
+   `broader`/`narrower` taxonomy.
+
+**Caution this sharpens (routing table):** don't let query-time ranking quietly *become* the
+concept→code grounding we rejected at index time. Grounding (identity) stays strictly curated;
+embeddings only **re-rank within an already-grounded candidate set** (the SITIR discipline).
+
+## H2 measured findings (2026-05-29) — concept kernel vs grep
+
+Gap-1 (does the concept layer earn its keep over prose+grep?) run twice on a real ~7k-entity
+single-language corpus, scored against verified ground truth. Corpus-specific numbers live in a
+local benchmark; the generic findings:
+
+- **Round 1 (concepts NOT materialized; kernel used find/overview):** kernel pulled ~2× the
+  documentation but cost ~40% more tokens *and guessed a wrong file path*. grep was more precise.
+  Materialization absent → the kernel is *worse* than grep.
+- **Round 2 (concepts materialized as a `resolve-concept` hub surface):** kernel flipped to **~4×
+  faster, ~2× fewer tokens, zero hallucinated paths** (exact paths come from the hub). **But grep
+  still won accuracy** — 100% recall every question vs the hub's ~67–83% on entity-concepts and
+  ~67% recall / ~30% precision on the noisiest aspect-concept.
+
+Conclusions (these temper the candidate thesis — don't overclaim):
+
+1. **Materialization is the unlock.** Unmaterialized, the concept layer loses to grep on every axis.
+   Materialized, it wins the axes it can win.
+2. **The proven win is speed & cost, NOT accuracy.** Entity-concept hubs are a *fast, cheap, ~80%
+   orientation* — excellent for "point me roughly," not yet a replacement for exhaustive search.
+3. **"The hub is only as good as what's in it."** Entity-concept hubs (deterministic path +
+   governing ADRs) are strong. Aspect-concept hubs lose on **both** axes:
+   - *precision* — they inherit the classifier's low precision (false-positive participants);
+   - *recall* — keyword-in-description prefilter **misses real participants whose text doesn't
+     contain the keyword** (e.g. a shared-state coordinator not named "lock/semaphore");
+   - and both are **blind to code-level gotchas** (legacy duplicates, "looks-like-X-but-isn't"),
+     which live in code/comments, not the doc-derived hub — exactly where grep (reading source) won.
+
+Experiment 1 — **structural recall** (scan source for the concern's primitives/imports → union with
+keyword recall → strict judge). **Result (2026-05-29): didn't move the needle, but diagnosed the real
+bottleneck.** Recall gain was narrow (error-handling +4, incl. the `retry.py` miss; concurrency/auth/
+eval +0) and precision stayed flat/noisy. Why: structural recall *surfaced* the missing candidates,
+but **the judge reasons from name+description, not source**, so it rejected the structurally-evident-
+but-description-silent ones (a circuit breaker with a module-level shared `_circuit` wasn't confirmed
+as concurrency because its docstring doesn't say so — and it arguably belongs under error-handling
+anyway). It *helped* only where a candidate had **both** a structural hit and a confirmable
+description (`retry.py`).
+
+**The pinned root cause:** the entire aspect pipeline reasons from **descriptions/docs, not source** —
+the same root cause as the H2 finding that the hub was blind to code-level gotchas. More candidates
+can't fix a judge that can't see the code.
+
+Experiment 2 — **give the judge source evidence** (pass the matched source lines, not just the
+description, and have it emit a code-level gotcha). **Result (2026-05-29): worked on all three axes.**
+- *Recall ↑* — the description-silent coordinators the Exp-1 judge rejected now get confirmed
+  (a module-level shared circuit breaker); structural-only confirmations rose (auth +5, err +6).
+- *Precision ↑ (true)* — the judge, now seeing source, **dropped the empty false positives** (files
+  with 0 coordination primitives that Exp-1 kept) and ~75% of confirmed participants now contain a
+  real primitive (vs the earlier noise).
+- *Gotchas* — genuine source-derived warnings now populate every aspect hub ("cancellation timing
+  affects tool ordering", "concurrency limit depends on semaphore scope") — the H2 Q3 capability the
+  doc-derived hub structurally lacked. Closed by the judge reading code.
+
+**Lesson:** the bottleneck was never recall — it was that *every stage reasoned from descriptions*.
+Putting source at the judge (not just recall) is what "fuse IR with structure" means here, and it's
+why grep won: it reads code. The residual imprecision is now a **definition** problem (the judge
+can't separate async fan-out from shared-state coordination because the concept definition lumps
+them — AOP "separability": split the concept or accept the broad reading), not a pipeline problem.
+
+## Parking lot — capture & move past (2026-05-29)
+
+Ideas worth remembering, deliberately NOT acting on now. Focus stays on aspect structural-recall.
+
+- **Hybrid kernel-then-grep (the H2 resolution).** Don't pit the concept hub against grep — compose
+  them. The hub gives fast orientation + exact path + governing ADRs; it then *hands off to
+  grep/glob* for the precise call-site and the code-level gotchas it structurally can't carry (H2
+  showed each wins a different axis). The production answer is the hub pointing grep at the right
+  files, not either alone.
+- **Dependency ontology.** Third-party imports (asyncio, numpy, httpx, pydantic, …) as a concept
+  axis, each mapping to a capability/field. The *opposite* of aspect-concepts: imports are
+  AST-deterministic → **perfect recall and precision, no LLM judge**. And imports ARE the structural
+  recall signal (files importing asyncio = the concurrency candidate set) — so dependency-concepts
+  both stand alone AND seed aspect-concept recall. Cheap, deterministic; revisit right after
+  structural recall.
+- **Wire concepts into the graph's vector store**, not just views — so MCP `find` surfaces concept
+  hubs directly (today they're only readable as files).
+- **Concept materialization into the real ingest→materialize pipeline** (vs the spike scripts) —
+  the productionization step, gated on entity-concepts proving out.
+- **Code-derived gotchas** — feed hub `gotcha`/notes from implementation (docstrings, top-of-file
+  comments, legacy/duplicate markers), the thing grep beat the hub on (H2 Q3).
+- **Confidence (ADR-0015) on concept edges** — surface per-edge confidence so low-precision aspect
+  participants are visibly hedged rather than asserted.
+
 ## Unexamined gaps (2026-05-29)
 
 The remaining ~10%. Most resolve only by measurement, not more reasoning — they are the shoot-list
