@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Template launcher for the Context Kernel MCP server over a project's knowledge graph.
+#
+# Copy to a local (gitignored) script, fill in the paths, and register it with your
+# coding agent at user scope. It sources a gitignored .env so the embedder API key
+# (named by `embedder_api_key_env` in config.toml) stays out of the agent config
+# rather than being stored there in plaintext.
+#
+#   cp scripts/mcp-server.sh.example scripts/mcp-local.sh   # gitignored
+#   chmod +x scripts/mcp-local.sh                            # then edit the paths below
+set -euo pipefail
+
+CK_ROOT="/path/to/context-kernel"                       # this repo (holds .venv and .env)
+PROJECT_CONFIG="/path/to/your/project/.context-kernel/config.toml"
+
+set -a
+# shellcheck disable=SC1091
+source "$CK_ROOT/.env"
+set +a
+
+exec "$CK_ROOT/.venv/bin/ck" mcp --config "$PROJECT_CONFIG"
