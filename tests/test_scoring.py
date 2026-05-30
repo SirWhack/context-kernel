@@ -55,6 +55,65 @@ class TestAuthority:
         assert scoring.authority(("HANDOFF.md",)) == 0.2
 
 
+# ── Repo-local role assignment (ADR-0022) ───────────────────────────────────
+
+
+class TestRepoRoles:
+    """Per-repo glob→role declarations override the built-in filename heuristics.
+
+    The assignment is local (what is this file in THIS repo); the tier it names is
+    valued globally (one ruler across a shared portfolio graph).
+    """
+
+    def _cfg(self, roles):
+        return ScoringConfig.resolve({"roles": roles})
+
+    def test_role_overrides_heuristic(self):
+        # README defaults to EPHEMERAL (0.2); declaring it OVERVIEW lifts it to the trunk.
+        cfg = self._cfg({"README.md": "OVERVIEW"})
+        assert scoring.classify_source("README.md") == "EPHEMERAL"          # heuristic
+        assert scoring.classify_source("README.md", cfg) == "OVERVIEW"      # declared
+        assert scoring.authority(("README.md",), cfg) == 0.85
+
+    def test_most_specific_glob_wins(self):
+        # a catch-all *.md and a literal README.md both match; the literal is more specific
+        cfg = self._cfg({"*.md": "EPHEMERAL", "README.md": "OVERVIEW"})
+        assert scoring.classify_source("README.md", cfg) == "OVERVIEW"
+        assert scoring.classify_source("CHANGELOG.md", cfg) == "EPHEMERAL"
+
+    def test_path_glob_matches_nested_doc(self):
+        cfg = self._cfg({"backend/README.md": "REFERENCE"})
+        assert scoring.classify_source("backend/README.md", cfg) == "REFERENCE"
+        # the bare top-level README is unaffected → falls back to the heuristic
+        assert scoring.classify_source("README.md", cfg) == "EPHEMERAL"
+
+    def test_unmatched_path_falls_back_to_heuristic(self):
+        cfg = self._cfg({"deployment.md": "OPS"})
+        assert scoring.classify_source("deployment.md", cfg) == "OPS"
+        assert scoring.classify_source("THEORY.md", cfg) == "THEORY"        # heuristic intact
+
+    def test_code_unaffected_by_md_role(self):
+        # a *.md role must never reclassify code — code matches by extension, not the glob
+        cfg = self._cfg({"*.md": "OVERVIEW"})
+        assert scoring.classify_source("backend/app/crud.py", cfg) == "CODE"
+
+    def test_role_to_unknown_tier_is_loud(self):
+        with pytest.raises(ValueError, match="unknown tier"):
+            ScoringConfig.resolve({"roles": {"README.md": "TRUNK"}})
+
+    def test_role_to_config_defined_tier(self):
+        # a role may name a tier the repo defines itself under authority_tiers
+        cfg = ScoringConfig.resolve(
+            {"authority_tiers": {"RUNBOOK": 0.55}, "roles": {"ops/*.md": "RUNBOOK"}}
+        )
+        assert scoring.classify_source("ops/deploy.md", cfg) == "RUNBOOK"
+        assert scoring.authority(("ops/deploy.md",), cfg) == 0.55
+
+    def test_no_roles_is_pure_heuristic(self):
+        assert dict(ScoringConfig.resolve().roles) == {}
+        assert scoring.classify_source("README.md", ScoringConfig.resolve()) == "EPHEMERAL"
+
+
 # ── Edge weight (Axis 4, shared with drift) ─────────────────────────────────
 
 
@@ -227,6 +286,14 @@ class TestScoringConfigResolve:
         assert cfg.authority_default == 0.3
         assert cfg.edge_weights["realizes"] == 0.9
         assert cfg.centrality_in_find is False
+        # global role vocabulary (ADR-0022): OVERVIEW capped at code, OPS mid
+        assert cfg.authority_tiers["OVERVIEW"] == 0.85
+        assert cfg.authority_tiers["OPS"] == 0.6
+        assert dict(cfg.roles) == {}
+
+    def test_roles_loaded_and_uppercased(self):
+        cfg = ScoringConfig.resolve({"roles": {"README.md": "overview", "docs/*.md": "Reference"}})
+        assert cfg.roles == {"readme.md": "OVERVIEW", "docs/*.md": "REFERENCE"}
 
     def test_config_overrides_default(self):
         cfg = ScoringConfig.resolve(

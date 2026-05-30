@@ -4,7 +4,9 @@
 
 Accepted. Axis 2 (recency) superseded by [ADR-0020](./0020-staleness-as-structural-drift.md);
 the compute-time boundary is fixed by [ADR-0019](./0019-confidence-materialized-relevance-at-query.md);
-edge-kind families/naming by [ADR-0021](./0021-structural-vs-semantic-edge-families.md).
+edge-kind families/naming by [ADR-0021](./0021-structural-vs-semantic-edge-families.md);
+the source→tier mapping (Axis 1) is split into repo-local role assignment + global role
+valuation by [ADR-0022](./0022-repo-role-assignment.md).
 
 ## Context
 
