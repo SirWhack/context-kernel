@@ -6,6 +6,8 @@ test-repos/
 
 # Eval run logs — contain corpus-derived content (records/harnesses ARE committed)
 evals/runs/*.log
+# Agent session transcripts from the kernel-vs-grep harness — contain corpus content
+evals/runs/sessions/
 
 # Scratch / working docs (local-only, never committed)
 # H2 spike artifacts — session logs, prompts, notes, review (all local, contain corpus data)

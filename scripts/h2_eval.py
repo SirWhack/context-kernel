@@ -45,15 +45,25 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from concept_spans import precision_patterns, find_spans   # ADR-0018: one oracle, three consumers
 
-PATH_RE = re.compile(r"`?([\w][\w./\-]*\.(?:py|ts|tsx|js|jsx|md))`?")
-EXT_RE = re.compile(r"\.(?:py|ts|tsx|js|jsx|md)$")
+# File types an answer may cite. Code stays first; infra/config added so foreign corpora
+# (Dockerfiles, compose/yaml, shell, json/toml configs) are scored, not silently dropped.
+# The `(?![A-Za-z0-9])` boundary stops `.js` from matching inside `.json` (the prefix bug).
+_EXTS = (r"py|pyi|tsx|ts|jsx|js|mjs|cjs|md|mdx|ya?ml|toml|json|jsonc"
+         r"|sh|bash|cfg|conf|ini|env|lock|sql|rs|go")
+_NAMES = r"Dockerfile|Containerfile|Makefile"
+PATH_RE = re.compile(
+    r"`?("
+    r"(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _EXTS + r")(?![A-Za-z0-9])"
+    r"|(?:[\w.\-]+/)*(?:" + _NAMES + r")(?![A-Za-z0-9.])"
+    r")`?")
+EXT_RE = re.compile(r"\.(?:" + _EXTS + r")$|(?:^|/)(?:" + _NAMES + r")$")
 META_FILES = {"claude.md", "agents.md", "readme.md"}
 SCORECARD_RE = re.compile(r"^\s*#{0,4}\s*scorecard\b|^\s*\|\s*Q\b", re.I)
 # a question header is EITHER a markdown header carrying a number ("## 4. Concurrency", "## Q4 — X")
 # OR a Q-style line ("Q1 — Turn Panel", "**Q1**"). Plain body enumeration ("1. read the index") is
 # NOT a header — it lacks both the `#` prefix and the `Q`.
 QHEAD_RE = re.compile(
-    r"^\s*#{1,4}\s*(?:Q\s*)?(\d+)\s*[.)\-—:]*\s*(.*\S)\s*$"     # markdown header with a number
+    r"^\s*#{1,4}\s*(?:Q\s*)?(\d+)\s*[.)\-—:]*\s*(.*\S)?\s*$"    # markdown header w/ number, title optional
     r"|^\s*\**\s*Q\s*(\d+)\b\s*[.)\-—:]*\s*(.*\S)?\s*$",         # Q-style line, optionally bold
     re.I)
 
@@ -110,14 +120,14 @@ def parse_transcript(path):
                 final = b.get("text", "")
     if first_user:
         low = first_user.lower()
-        if "arm b" in low or "baseline" in low:            # explicit arm label wins
-            arm = "grep"
-        elif "arm a" in low:
+        if "arm a" in low:                                 # explicit arm label wins
             arm = "kernel"
-        elif "grep" in low or "ripgrep" in low:
+        elif "arm b" in low:
             arm = "grep"
         elif "concept kernel" in low or "context kernel" in low or "concept hub" in low:
-            arm = "kernel"
+            arm = "kernel"                                  # kernel signal before generic "grep"
+        elif "baseline" in low or "grep" in low or "ripgrep" in low:
+            arm = "grep"
     reads = [a for n, a in tools if n == "Read"]
     dup_reads = len(reads) - len(set(reads))
     return {"path": str(path), "arm": arm, "tools": tools, "failed": failed,
@@ -250,6 +260,19 @@ def audit_recall(parsed, gold):
     return out
 
 
+def audit_grounding(parsed, gold, root):
+    """Gold files the arm actually OPENED (a Read tool call), not merely named in the prose.
+    This is the memory-proof axis: on a public/memorized repo, an arm can recall the right
+    paths without retrieving — grounding only credits files whose contents it actually read."""
+    opened = [a for n, a in parsed["tools"] if n == "Read"]
+    out = {}
+    for q, items in gold.items():
+        hit = [g for g in items if any(o.endswith(g) or o.endswith("/" + g) for o in opened)]
+        out[q] = {"opened": len(hit), "gold": len(items),
+                  "missed": [g for g in items if g not in hit]}
+    return out
+
+
 # ── reporting ────────────────────────────────────────────────────────────────
 def report(parsed, root, aspects, gold):
     u = parsed["usage"]; fresh = u["in"] + u["out"]
@@ -273,17 +296,29 @@ def report(parsed, root, aspects, gold):
     for q, r in sorted(rec.items()):
         print(f"  RECALL Q{q}: {r['found']}/{r['gold']}"
               + (f"  missed={r['missed']}" if r['missed'] else " ✓"))
+    grd = audit_grounding(parsed, gold, root) if gold else {}
+    for q, r in sorted(grd.items()):
+        print(f"  GROUND Q{q}: {r['opened']}/{r['gold']} opened"
+              + (f"  not-opened={r['missed']}" if r['missed'] else " ✓"))
+    g_open = sum(r["opened"] for r in grd.values())
+    g_tot = sum(r["gold"] for r in grd.values())
+    r_found = sum(r["found"] for r in rec.values())
     return {"arm": parsed["arm"], "calls": tcount, "failed": parsed["failed"],
             "dup": parsed["dup_reads"], "fresh": fresh, "missing": len(missing),
-            "precision": prec, "recall": rec}
+            "precision": prec, "recall": rec,
+            "grounded": (g_open, g_tot), "recalled": (r_found, g_tot)}
 
 
 def compare(rows):
     print(f"\n{'='*72}\n  COMPARE")
-    hdr = f"  {'arm':8} {'calls':>5} {'failed':>6} {'dup':>4} {'fresh_tok':>9} {'halluc':>6}"
+    hdr = (f"  {'arm':8} {'calls':>5} {'failed':>6} {'dup':>4} {'fresh_tok':>9} {'halluc':>6} "
+           f"{'grounded':>9} {'recalled':>9}")
     print(hdr); print("  " + "-" * (len(hdr) - 2))
     for r in rows:
-        print(f"  {r['arm']:8} {r['calls']:>5} {r['failed']:>6} {r['dup']:>4} {r['fresh']:>9} {r['missing']:>6}")
+        g = f"{r['grounded'][0]}/{r['grounded'][1]}"
+        rc = f"{r['recalled'][0]}/{r['recalled'][1]}"
+        print(f"  {r['arm']:8} {r['calls']:>5} {r['failed']:>6} {r['dup']:>4} {r['fresh']:>9} "
+              f"{r['missing']:>6} {g:>9} {rc:>9}")
     # aspect precision side by side
     keys = sorted({k for r in rows for k in r["precision"]})
     for k in keys:
@@ -305,9 +340,13 @@ def main():
     P = Path(os.environ.get("CK_PORTFOLIO", "")).expanduser()
     if not P.exists():
         sys.exit("Set CK_PORTFOLIO to the portfolio root.")
-    onto = tomllib.loads((P / ".context-kernel/ontology.toml").read_text())["concepts"]
-    aspects = {k: s for k, s in onto.items()
-               if s.get("type") == "aspect" and s.get("structural_patterns")}
+    onto_path = P / ".context-kernel/ontology.toml"
+    if onto_path.exists():
+        onto = tomllib.loads(onto_path.read_text())["concepts"]
+        aspects = {k: s for k, s in onto.items()
+                   if s.get("type") == "aspect" and s.get("structural_patterns")}
+    else:
+        aspects = {}  # foreign repos have no ontology — cost + hallucination + recall still score
 
     paths = list(args.transcripts)
     if args.dir:

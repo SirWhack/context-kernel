@@ -1,0 +1,56 @@
+{
+  "repo": "full-stack-fastapi-template",
+  "portfolio": "test-repos/full-stack-fastapi-template",
+  "note": "Gold = files that genuinely answer each question, verified by hand against the tree (2026-05-30). Used by scripts/h2_eval.py --gold for recall, and by its hallucination axis as the resolvable set.",
+  "tasks": [
+    {
+      "id": "q1-auth",
+      "question": "How does this app authenticate users? Trace the full flow: where passwords are hashed and verified, where JWT access tokens are created and decoded, and which endpoint issues a token on login. List the exact source files and the key functions in each.",
+      "gold": [
+        "backend/app/core/security.py",
+        "backend/app/api/deps.py",
+        "backend/app/api/routes/login.py",
+        "backend/app/core/config.py"
+      ]
+    },
+    {
+      "id": "q2-db",
+      "question": "How is the database engine configured and how are schema migrations defined and applied? Name the files that set up the SQLModel/SQLAlchemy engine, seed initial data, and hold the Alembic migration environment.",
+      "gold": [
+        "backend/app/core/db.py",
+        "backend/app/alembic/env.py",
+        "backend/app/initial_data.py",
+        "backend/app/core/config.py"
+      ]
+    },
+    {
+      "id": "q3-client",
+      "question": "The frontend ships a fully typed API client. Is it hand-written or generated? If generated, what generates it, from what input, and which command/config drives it? Name the exact files.",
+      "gold": [
+        "scripts/generate-client.sh",
+        "frontend/openapi-ts.config.ts",
+        "frontend/package.json",
+        "frontend/src/client/sdk.gen.ts"
+      ]
+    },
+    {
+      "id": "q4-models",
+      "question": "Where are the User and Item data models defined, and where is the CRUD logic that creates and updates a User? Name the exact files and the key functions.",
+      "gold": [
+        "backend/app/models.py",
+        "backend/app/crud.py"
+      ]
+    },
+    {
+      "id": "q5-deploy",
+      "question": "How is this application deployed? Identify the container images, the multi-service orchestration, the reverse proxy, and the CI workflow that ships to production. Name the exact files.",
+      "gold": [
+        "docker-compose.yml",
+        "deployment.md",
+        "backend/Dockerfile",
+        "frontend/Dockerfile",
+        ".github/workflows/deploy-production.yml"
+      ]
+    }
+  ]
+}
