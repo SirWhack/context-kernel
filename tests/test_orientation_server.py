@@ -287,3 +287,45 @@ class TestFindIntegration:
         kinds = {c.kind for c in store.chunks}
         assert "entity" in kinds
         assert "summary" in kinds
+
+
+class _ConstEmbedder:
+    """Deterministic embedder for unit tests — fixed vector, no llama-server needed."""
+
+    def embed(self, text, *, mode="passage"):
+        return struct.pack("3f", 1.0, 0.0, 0.0)
+
+    def embed_batch(self, texts, *, mode="passage"):
+        return [self.embed(t, mode=mode) for t in texts]
+
+
+class TestFindScopeFallback:
+    """find() must not silently return empty when a scope matches no chunk — it falls back
+    to the whole corpus and says so (eval finding 2026-05-30)."""
+
+    def _store(self):
+        store = _FakeStore()
+        emb = struct.pack("3f", 1.0, 0.0, 0.0)
+        store.upsert(GraphCommit("c1"), [], [], [], [
+            EmbeddedChunk(id="x", embedding=emb, chunk_text="JWT auth lives here",
+                          scope=ScopePath(Path("backend/auth")),
+                          source_path="backend/auth/security.py", kind="entity"),
+        ])
+        return store
+
+    def test_unmatched_scope_falls_back_to_whole_corpus(self, tmp_path):
+        out = find("jwt auth", ScopePath(Path("frontend/nope")), 4096, tmp_path,
+                   self._store(), _ConstEmbedder())
+        assert "security.py" in out
+        assert "whole portfolio" in out.lower()
+
+    def test_matched_scope_has_no_fallback_note(self, tmp_path):
+        out = find("jwt auth", ScopePath(Path("backend/auth")), 4096, tmp_path,
+                   self._store(), _ConstEmbedder())
+        assert "security.py" in out
+        assert "whole portfolio" not in out.lower()
+
+    def test_truly_empty_corpus_still_reports_no_results(self, tmp_path):
+        out = find("jwt auth", ScopePath(Path("backend/auth")), 4096, tmp_path,
+                   _FakeStore(), _ConstEmbedder())
+        assert "no results" in out.lower()

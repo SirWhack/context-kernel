@@ -129,6 +129,18 @@ def find(
             "Start the embedder server and retry, or use `overview` for scope-level orientation."
         )
 
+    # A scope that indexes nothing must not read as "nothing relevant" — fall back to the
+    # whole corpus and say so, rather than silently returning empty (eval finding 2026-05-30).
+    note = ""
+    if not results and scope is not None:
+        try:
+            results = nearest_chunks(query, store, embedder, k=10, scope=None)
+        except Exception:
+            results = []
+        if results:
+            note = (f"_No indexed content under scope `{scope}`; searched the whole "
+                    f"portfolio instead._\n\n")
+
     if not results:
         scope_msg = f" in scope `{scope}`" if scope else ""
         return f"No results found for query: \"{query}\"{scope_msg}."
@@ -141,4 +153,4 @@ def find(
 
     chunks = [r.chunk_text for r in results]
     paths = [r.source_path for r in results]
-    return assemble(chunks, paths, max_tokens)
+    return note + assemble(chunks, paths, max_tokens)

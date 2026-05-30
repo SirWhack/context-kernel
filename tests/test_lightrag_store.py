@@ -171,3 +171,53 @@ class TestGraphCommit:
         assert store.graph_commit() == GraphCommit("c1")
         store.upsert(GraphCommit("c2"), [], [], [])
         assert store.graph_commit() == GraphCommit("c2")
+
+
+class TestScopeFilter:
+    """search_similar scope handling — normalize repo-name/absolute scopes to the stored
+    portfolio-relative form, and treat a scope as a subtree (prefix). Regression for the
+    eval finding where `find(scope='open-webui')` silently returned zero results."""
+
+    def _store(self, tmp_path):
+        import struct
+        portfolio = tmp_path / "myrepo"
+        store = LightRAGStore(portfolio / ".context-kernel" / "graph")
+        emb = struct.pack("3f", 1.0, 0.0, 0.0)
+        chunks = [
+            EmbeddedChunk(id="a", embedding=emb, chunk_text="api", scope=ScopePath(Path("backend/app/api")), source_path="backend/app/api/routes.py", kind="entity"),
+            EmbeddedChunk(id="b", embedding=emb, chunk_text="core", scope=ScopePath(Path("backend/app/core")), source_path="backend/app/core/db.py", kind="entity"),
+            EmbeddedChunk(id="c", embedding=emb, chunk_text="fe", scope=ScopePath(Path("frontend/src")), source_path="frontend/src/main.ts", kind="entity"),
+        ]
+        store.upsert(GraphCommit("c1"), [], [], [], chunks)
+        return store, portfolio, emb
+
+    def test_none_scope_searches_whole_corpus(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        assert len(store.search_similar(emb, 10)) == 3
+
+    def test_exact_scope_excludes_subdirs_of_siblings(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        r = store.search_similar(emb, 10, ScopePath(Path("backend/app/api")))
+        assert {x.source_path for x in r} == {"backend/app/api/routes.py"}
+
+    def test_scope_is_a_subtree_prefix(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        r = store.search_similar(emb, 10, ScopePath(Path("backend")))
+        assert {x.source_path for x in r} == {"backend/app/api/routes.py", "backend/app/core/db.py"}
+
+    def test_repo_name_means_whole_corpus(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        assert len(store.search_similar(emb, 10, ScopePath(Path("myrepo")))) == 3
+
+    def test_dot_means_whole_corpus(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        assert len(store.search_similar(emb, 10, ScopePath(Path(".")))) == 3
+
+    def test_absolute_path_is_normalized(self, tmp_path):
+        store, portfolio, emb = self._store(tmp_path)
+        r = store.search_similar(emb, 10, ScopePath(portfolio / "backend" / "app" / "core"))
+        assert {x.source_path for x in r} == {"backend/app/core/db.py"}
+
+    def test_unknown_scope_returns_empty(self, tmp_path):
+        store, _, emb = self._store(tmp_path)
+        assert store.search_similar(emb, 10, ScopePath(Path("does/not/exist"))) == []

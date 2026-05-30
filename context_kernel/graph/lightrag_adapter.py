@@ -170,16 +170,40 @@ class LightRAGStore(KnowledgeStore):
             return emb_path.read_bytes()
         return None
 
+    def _normalize_scope(self, scope: ScopePath | None) -> str | None:
+        """Map a caller's `scope` to the portfolio-relative posix form chunks are keyed by
+        (e.g. 'backend/open_webui/routers'). Accepts an absolute path or the repo name and
+        resolves it; returns None ('search the whole corpus') for the portfolio root, the
+        repo name, or '.'. Matching in search_similar is prefix-based, so a scope includes
+        its subtree. Without this, a caller passing the repo name or an absolute path matched
+        zero chunks and `find` silently returned "No results found" (eval finding 2026-05-30)."""
+        if scope is None:
+            return None
+        portfolio = self._root.parent.parent  # storage_root = <portfolio>/.context-kernel/graph
+        p = Path(str(scope))
+        if p.is_absolute():
+            try:
+                p = p.relative_to(portfolio)
+            except ValueError:
+                pass
+        s = p.as_posix().strip("/")
+        if s in ("", ".", portfolio.name):
+            return None
+        return s
+
     def search_similar(
         self,
         query_embedding: bytes,
         k: int,
         scope: ScopePath | None = None,
     ) -> list[SearchResult]:
+        target = self._normalize_scope(scope)
         scored: list[SearchResult] = []
         for chunk in self._chunks:
-            if scope is not None and chunk.scope != scope:
-                continue
+            if target is not None:
+                cs = str(chunk.scope)
+                if cs != target and not cs.startswith(target + "/"):  # scope = subtree
+                    continue
             score = _cosine_sim(query_embedding, chunk.embedding)
             # Attach the stored confidence so `find` can compose relevance without
             # re-reading the graph. Entity chunks are addressed by their entity id;
