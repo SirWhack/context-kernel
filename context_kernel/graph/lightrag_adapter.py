@@ -181,12 +181,18 @@ class LightRAGStore(KnowledgeStore):
             if scope is not None and chunk.scope != scope:
                 continue
             score = _cosine_sim(query_embedding, chunk.embedding)
+            # Attach the stored confidence so `find` can compose relevance without
+            # re-reading the graph. Entity chunks are addressed by their entity id;
+            # summary chunks have no entity → neutral handles. No policy here.
+            ent = self._entities.get(chunk.id) if chunk.kind == "entity" else None
             scored.append(SearchResult(
                 chunk_text=chunk.chunk_text,
                 source_path=chunk.source_path,
                 score=score,
                 kind=chunk.kind,
                 scope=chunk.scope,
+                entity_id=ent.id if ent else None,
+                confidence=ent.confidence if ent else 1.0,
             ))
         scored.sort(key=lambda r: r.score, reverse=True)
         return scored[:k]

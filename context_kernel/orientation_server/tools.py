@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from context_kernel import scoring
 from context_kernel.graph.protocol import KnowledgeStore, SearchResult
 from context_kernel.materializer.headers import parse
+from context_kernel.scoring import ScoringConfig
 from context_kernel.types import ScopePath
 
 if TYPE_CHECKING:
@@ -49,6 +52,36 @@ def assemble(chunks: list[str], source_paths: list[str], max_tokens: int) -> str
         if para > budget // 2:
             result = cut[:para]
     return result
+
+
+def rank_by_relevance(
+    results: list[SearchResult],
+    store: KnowledgeStore,
+    cfg: ScoringConfig,
+) -> list[SearchResult]:
+    """Rerank similarity hits by relevance: similarity × confidence × proximity (ADR-0015).
+
+    The top-3 similarity hits seed proximity (a free-text query has no seed entities). Each
+    candidate is boosted by its 1-hop adjacency to a seed; proximity is a boost (≥ 1), never
+    a gate, so an unconnected strong hit is never zeroed. Centrality stays out of the score
+    by default — a query wants *relevant*, not merely *central*, results.
+    """
+    seeds = [r.entity_id for r in results[:3] if r.entity_id]
+    adjacency = {
+        sid: [(n.entity.id, n.relationship.kind) for n in store.get_neighbors(sid)]
+        for sid in seeds
+    }
+
+    def _score(r: SearchResult) -> float:
+        prox = scoring.proximity(r.entity_id, seeds, adjacency, cfg) if r.entity_id else 1.0
+        s = scoring.find_score(r.score, r.confidence, prox)
+        if cfg.centrality_in_find and r.entity_id:
+            ent = store.get_entity(r.entity_id)
+            if ent is not None:
+                s *= 1.0 + ent.centrality
+        return s
+
+    return sorted(results, key=_score, reverse=True)
 
 
 def overview(scope: ScopePath, max_tokens: int, tree_root: Path) -> str:
@@ -99,6 +132,12 @@ def find(
     if not results:
         scope_msg = f" in scope `{scope}`" if scope else ""
         return f"No results found for query: \"{query}\"{scope_msg}."
+
+    # Compose relevance from the pre-materialized confidence + graph adjacency (ADR-0019:
+    # store is the similarity mechanism, find is the policy composer). Query-time knobs
+    # come from CK_SCORING_* env (the highest-precedence layer).
+    cfg = ScoringConfig.resolve(env=os.environ)
+    results = rank_by_relevance(results, store, cfg)
 
     chunks = [r.chunk_text for r in results]
     paths = [r.source_path for r in results]
