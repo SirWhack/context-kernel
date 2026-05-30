@@ -10,6 +10,9 @@ import pytest
 
 from context_kernel import change_detection as cd
 from context_kernel import scoring
+from context_kernel.config_store import IngesterConfig
+from context_kernel.ingester import ingest
+from context_kernel.ingester.handlers import RawEntity, RawRelationship
 
 
 def _git(repo, *args):
@@ -140,3 +143,122 @@ class TestDriftScenario:
         # churn to the *code* since the code last changed is 0 → no drift on edges
         # where code is the claimant.
         assert cd.churn(str(code), since) == 0
+
+
+# ── Ingest integration (Slice 4) ────────────────────────────────────────────
+
+
+class _CapturingStore:
+    """Minimal KnowledgeStore capturing the upsert for assertions."""
+
+    def __init__(self):
+        self.entities = []
+        self.relationships = []
+
+    def graph_commit(self):
+        from context_kernel.types import GraphCommit
+        return GraphCommit("initial")
+
+    def get_entity(self, entity_id):
+        return None
+
+    def get_neighbors(self, entity_id):
+        return []
+
+    def get_summary(self, scope):
+        return None
+
+    def get_embedding(self, digest):
+        return None
+
+    def search_similar(self, query_embedding, k, scope=None):
+        return []
+
+    def list_summaries(self):
+        return []
+
+    def list_entities_by_scope(self):
+        return {}
+
+    def upsert(self, graph_commit, entities, relationships, summaries, chunks=None, scope_entities=None):
+        self.entities = list(entities)
+        self.relationships = list(relationships)
+
+
+class _RealizesSummarizer:
+    """Emits one decision entity per chunk plus a `realizes` edge to a fixed code symbol."""
+
+    def __init__(self, target, name="doc claim"):
+        self.target = target
+        self.name = name
+        self.calls = []
+
+    def summarize(self, text, *, context=""):
+        self.calls.append(text)
+        self.last_context = context
+        ents = [RawEntity(name=self.name, kind="decision", description=f"claim about {self.target}")]
+        rels = [RawRelationship(source_name=self.name, target_name=self.target, kind="realizes", description="")]
+        return ents, rels
+
+    def summarize_scope(self, scope_name, entity_descriptions):
+        return f"summary: {len(entity_descriptions)} entities"
+
+
+def _ent(store, name):
+    return next((e for e in store.entities if e.name == name), None)
+
+
+class TestIngestScoringPass:
+    def test_stale_referent_doc_gets_low_confidence(self, repo):
+        code = repo / "summarizer.py"
+        doc = repo / "design.md"
+        code.write_text("class LLMSummarizer:\n" + "".join(f"    x{i} = {i}\n" for i in range(12)))
+        doc.write_text("# Design\n\nThe LLMSummarizer realizes the extraction decision.\n")
+        _commit(repo, "c1: doc + code")
+
+        # code is rewritten after the doc's commit → the doc's claim drifts
+        code.write_text("class LLMSummarizer:\n" + "".join(f"    y{i} = {i*2}\n" for i in range(12)))
+        _commit(repo, "c2: rewrite code")
+
+        store = _CapturingStore()
+        ingest(store, repo, repo, IngesterConfig(), summarizer=_RealizesSummarizer("LLMSummarizer"))
+
+        doc_ent = _ent(store, "doc claim")
+        assert doc_ent is not None
+        # drift loaded on the doc side → confidence is strictly below raw authority
+        assert doc_ent.confidence < doc_ent.source_tier
+        # and the realizes edge carries the drift
+        realizes = [r for r in store.relationships if r.kind == "realizes"]
+        assert realizes and realizes[0].drift > 0.0
+
+    def test_stable_doc_keeps_full_confidence(self, repo):
+        code = repo / "summarizer.py"
+        doc = repo / "design.md"
+        code.write_text("class LLMSummarizer:\n    pass\n")
+        doc.write_text("# Design\n\nThe LLMSummarizer realizes the extraction decision.\n")
+        _commit(repo, "c1: doc + code, both current")
+
+        store = _CapturingStore()
+        ingest(store, repo, repo, IngesterConfig(), summarizer=_RealizesSummarizer("LLMSummarizer"))
+
+        doc_ent = _ent(store, "doc claim")
+        assert doc_ent is not None
+        # nothing churned after the doc's commit → no drift → confidence == authority
+        assert doc_ent.confidence == pytest.approx(doc_ent.source_tier)
+        realizes = [r for r in store.relationships if r.kind == "realizes"]
+        assert realizes and realizes[0].drift == 0.0
+
+    def test_code_referenced_by_many_docs_is_central(self, repo):
+        code = repo / "store.py"
+        code.write_text("class KnowledgeStore:\n    pass\n")
+        (repo / "a.md").write_text("# A\n\nKnowledgeStore is the backbone.\n")
+        (repo / "b.md").write_text("# B\n\nKnowledgeStore holds the graph.\n")
+        _commit(repo, "c1")
+
+        store = _CapturingStore()
+        ingest(store, repo, repo, IngesterConfig(), summarizer=_RealizesSummarizer("KnowledgeStore"))
+
+        code_ent = _ent(store, "KnowledgeStore")
+        assert code_ent is not None
+        # two distinct documents realize it → top of the normalized centrality range
+        assert code_ent.centrality == 1.0

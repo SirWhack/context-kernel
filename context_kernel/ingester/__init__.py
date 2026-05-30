@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from context_kernel import change_detection as cd
+from context_kernel import scoring
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore, Relationship, Summary
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import walk_source_files
@@ -331,17 +333,57 @@ def ingest(
     )
     log.info("entity_resolution", extra=rstats)
 
+    # Scoring pass (ADR-0015/0020). All formulas live in `scoring`; all git I/O in
+    # `change_detection`. Here we only orchestrate: per-edge weight + drift, then
+    # per-node authority / centrality / confidence.
+    cfg = config.scoring
+    ent_by_id = {c.id: c for c in canonical}
+
+    def _abs(src: str) -> str:
+        return str(sources_root / src)
+
+    def _code_src(c) -> str | None:
+        return next((s for s in c.sources if s.endswith(CODE_EXT)), None)
+
+    def _doc_src(c) -> str | None:
+        return next((s for s in c.sources if not s.endswith(CODE_EXT)), None)
+
+    # Per-edge: static weight, plus drift on doc↔code edges (code = referent, ADR-0020).
+    # Drift loads on the claimant (doc) end; node_drift then aggregates a node's
+    # claimant-side edges for its confidence.
+    claimant_drift: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    all_relationships: list[Relationship] = []
+    for r in resolved_rels:
+        weight = scoring.edge_weight(r.kind, cfg)
+        drift = 0.0
+        cs, ct = ent_by_id.get(r.source_id), ent_by_id.get(r.target_id)
+        if cs is not None and ct is not None and cs.is_code != ct.is_code:
+            claimant_c, referent_c = (cs, ct) if ct.is_code else (ct, cs)
+            claimant_src, referent_src = _doc_src(claimant_c), _code_src(referent_c)
+            if claimant_src and referent_src:
+                since = cd.commit_of(_abs(claimant_src))
+                lines = cd.churn(_abs(referent_src), since)
+                drift = scoring.edge_drift(lines, cd.size(_abs(referent_src)))
+                claimant_drift[claimant_c.id].append((drift, weight))
+        all_relationships.append(Relationship(
+            source_id=r.source_id, target_id=r.target_id, kind=r.kind,
+            description=r.description, weight=weight, drift=drift,
+        ))
+
+    # Centrality: distinct-source in-degree over centrality kinds (resolver-global edge set).
+    node_sources = {c.id: tuple(c.sources) for c in canonical}
+    centrality_map = scoring.centrality(node_sources, resolved_rels, cfg)
+
     all_entities: list[Entity] = []
-    all_relationships = [
-        Relationship(source_id=r.source_id, target_id=r.target_id, kind=r.kind, description=r.description)
-        for r in resolved_rels
-    ]
     scope_entities: dict[str, list[Entity]] = defaultdict(list)
     seen_in_scope: dict[str, set[str]] = defaultdict(set)
     for c in canonical:
+        tier = scoring.authority(c.sources, cfg)
+        conf = scoring.confidence(tier, scoring.node_drift(claimant_drift.get(c.id, ())))
         ent = Entity(
             id=c.id, name=c.name, kind=c.kind, description=c.description,
             aliases=tuple(c.aliases), sources=tuple(c.sources), kinds=tuple(c.kinds),
+            source_tier=tier, centrality=centrality_map.get(c.id, 0.0), confidence=conf,
         )
         all_entities.append(ent)
         if c.embedding is not None:
@@ -367,8 +409,16 @@ def ingest(
         scope = ScopePath(Path(scope_key))
         summary_text = None
 
+        # ADR-0015 composite: emphasize current, central entities. ranking_weight =
+        # confidence × centrality; stable sort keeps insertion order among ties.
+        ranked = sorted(
+            entities,
+            key=lambda e: scoring.ranking_weight(e.confidence, e.centrality),
+            reverse=True,
+        )
+
         if summarizer is not None:
-            descriptions = [e.description for e in entities if e.description]
+            descriptions = [e.description for e in ranked if e.description]
             if descriptions:
                 summary_text = summarizer.summarize_scope(str(scope), descriptions)
 
