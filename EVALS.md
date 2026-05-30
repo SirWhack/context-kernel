@@ -188,6 +188,20 @@ knob resolves through three layers, highest wins:
 hardcoded default  →  .context-kernel/config.toml [ingester.scoring]  →  CK_SCORING_* env var
 ```
 
+**Repo roles (ADR-0022).** Authority's source→tier step is split: a per-repo
+`[ingester.scoring.roles]` map (glob → role name) declares *what each prose file is in this
+repo* (local assignment), while the role's authority *number* stays global (`AUTHORITY_TIERS`,
+one ruler across the shared portfolio graph). `classify_source` consults roles first
+(most-specific glob wins), then the built-in heuristic. The global vocabulary adds
+`OVERVIEW` (0.85, repo trunk — capped at `CODE`) and `OPS` (0.6, operational reference).
+Roles are config-only (not an env sweep knob) and require a re-ingest. Example:
+
+```toml
+[ingester.scoring.roles]
+"README.md" = "OVERVIEW"
+"deployment.md" = "OPS"
+```
+
 The env layer exists so an eval sweep overrides a knob **per run without editing files** —
 `CK_SCORING_AUTHORITY_DEFAULT=0.4 ck ingest …`. The knobs:
 

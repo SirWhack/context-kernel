@@ -17,6 +17,7 @@ no edges → node_drift 0; unknown kind → mid weight.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -29,8 +30,10 @@ AUTHORITY_TIERS: dict[str, float] = {
     "ARCHITECTURE": 0.95,  # module ownership contract
     "ADR": 0.9,           # settled decision
     "CODE": 0.85,         # always current for what IS
+    "OVERVIEW": 0.85,     # repo trunk / top-level orientation doc — capped AT code (ADR-0022)
     "CONTEXT": 0.8,       # canonical vocabulary
     "REFERENCE": 0.8,     # authored understanding
+    "OPS": 0.6,           # operational reference (deploy / run / configure) — ADR-0022
     "SPEC": 0.5,          # weeks shelf-life
     "EPHEMERAL": 0.2,     # disposable context
 }
@@ -68,6 +71,11 @@ class ScoringConfig:
 
     authority_tiers: Mapping[str, float] = field(default_factory=lambda: dict(AUTHORITY_TIERS))
     authority_default: float = AUTHORITY_DEFAULT
+    # Per-repo role declarations: glob (relative source path) → tier name. The LOCAL
+    # assignment layer (PROTOTYPE: repo roles) — what each prose file *is* in this repo.
+    # The tier *number* it maps to stays GLOBAL (authority_tiers), so a role means the
+    # same thing across every project in a shared portfolio graph. Empty = pure heuristic.
+    roles: Mapping[str, str] = field(default_factory=dict)
     edge_weights: Mapping[str, float] = field(default_factory=lambda: dict(EDGE_WEIGHTS))
     edge_weight_default: float = EDGE_WEIGHT_DEFAULT
     centrality_kinds: frozenset[str] = CENTRALITY_KINDS
@@ -98,6 +106,18 @@ class ScoringConfig:
         weights.update({str(k).lower(): float(v) for k, v in _sub(section, "edge_weights").items()})
         edge_weight_default = float(section.get("edge_weight_default", EDGE_WEIGHT_DEFAULT))
 
+        # Local role assignment: glob → tier name (value uppercased to match the global ruler).
+        # A role names a GLOBAL tier; the assignment is repo-local but the valuation is not
+        # (ADR-0022). An unknown tier name is a config error — fail loud, don't silently
+        # fall through to the prose catch-all.
+        roles = {str(k).lower(): str(v).upper() for k, v in _sub(section, "roles").items()}
+        unknown = sorted(set(roles.values()) - set(tiers))
+        if unknown:
+            raise ValueError(
+                f"scoring.roles references unknown tier(s) {unknown}; "
+                f"known tiers: {sorted(tiers)} (define one under [ingester.scoring.authority_tiers])"
+            )
+
         drift_hops = int(section.get("drift_hops", DRIFT_HOPS))
         proximity_hops = int(section.get("proximity_hops", PROXIMITY_HOPS))
         centrality_in_find = _as_bool(section.get("centrality_in_find", CENTRALITY_IN_FIND))
@@ -125,6 +145,7 @@ class ScoringConfig:
         return cls(
             authority_tiers=tiers,
             authority_default=authority_default,
+            roles=roles,
             edge_weights=weights,
             edge_weight_default=edge_weight_default,
             centrality_kinds=CENTRALITY_KINDS,
@@ -153,14 +174,28 @@ def _as_bool(v: object) -> bool:
 _ADR_NAME = re.compile(r"^\d{3,4}[-_].*\.md$")
 
 
-def classify_source(path: str) -> str:
+def classify_source(path: str, cfg: ScoringConfig = DEFAULTS) -> str:
     """Map a source path to an authority tier name, or "" for the catch-all (prose).
 
-    Code is matched by extension, so the catch-all only ever applies to prose — an
-    unrecognized doc is far likelier to be scratch than a missed THEORY.md.
+    Resolution order: per-repo role declarations (`cfg.roles`, most-specific glob wins)
+    override the built-in filename heuristics. Roles are the LOCAL assignment ("what is
+    this file in *this* repo?"); the tier they name is valued GLOBALLY (authority_tiers),
+    so the same role is comparable across a shared portfolio graph. Code is matched by
+    extension, so the catch-all only ever applies to prose — an unrecognized doc is far
+    likelier to be scratch than a missed THEORY.md.
     """
     p = path.replace("\\", "/").lower()
     base = p.rsplit("/", 1)[-1]
+
+    if cfg.roles:
+        hits = [
+            pat for pat in cfg.roles
+            if fnmatch.fnmatch(p, pat) or fnmatch.fnmatch(base, pat)
+        ]
+        if hits:
+            # Most-specific glob wins: fewest wildcards, then longest literal.
+            best = max(hits, key=lambda pat: (-pat.count("*"), len(pat)))
+            return cfg.roles[best]
 
     if base == "theory.md":
         return "THEORY"
@@ -186,7 +221,7 @@ def authority(sources: Iterable[str], cfg: ScoringConfig = DEFAULTS) -> float:
     best = cfg.authority_default
     seen = False
     for src in sources:
-        tier = classify_source(src)
+        tier = classify_source(src, cfg)
         weight = cfg.authority_tiers.get(tier, cfg.authority_default)
         if not seen or weight > best:
             best = weight

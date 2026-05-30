@@ -82,3 +82,27 @@ Discrimination (rank correlation vs a gold ordering), drift calibration, and kno
 sensitivity — all three need a **planted-defect gold corpus** (EVALS.md issue-#6 case
 study, step 1). This run motivates building it: items 2–4 above can only be measured
 against planted churn + planted lexicon-inflation hubs, not a clean upstream template.
+
+## Follow-up: repo roles applied (ADR-0022)
+
+Finding #1 (authority calibrated to model-time's taxonomy) was fixed by **repo-local role
+assignment** — a 6-line `[ingester.scoring.roles]` map declaring `README → OVERVIEW`,
+`deployment/development → OPS`, component READMEs → `REFERENCE`. Re-ingest on the same
+corpus (cost $0.005, summarizer cache hit):
+
+| | Baseline (heuristic only) | With roles |
+|---|---|---|
+| source_tier values | degenerate: 0.20 / 0.30 / 0.85 | graded: 0.50 / 0.60 / 0.80 / 0.85 |
+| doc confidence (median) | 0.300 | 0.600 |
+| all-entity mean confidence | 0.681 | **0.807** |
+| README's 42 entities | 0.20 (floor) | 0.85 (OVERVIEW, capped at code) |
+| central ops-doc hubs | cen 1.0 @ conf 0.30 | cen 1.0 @ conf 0.60 |
+
+**`find` interaction (the design finding).** Capping `OVERVIEW` at `CODE` (0.85) was chosen
+after the eval showed the doc-vs-code ordering is a *similarity* story, not an authority one:
+a README chunk out-similars a code chunk for NL queries (0.75 vs 0.61 on "JWT verification"),
+and the original code-first results were an artifact of flooring README at 0.2. Probing 5
+query intents showed `find` already routes correctly by similarity (symbol queries →
+code-first on their own; concept/ops/how-to → doc-first, which is correct), and returns a
+**mixed packet** with the relevant code entity reliably in the top-k. A kind-aware reranker
+was therefore rejected as YAGNI. See ADR-0022.
