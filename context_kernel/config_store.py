@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from context_kernel.scoring import ScoringConfig
 from context_kernel.types import ViewSpec
 
 _PROJECT_NAME_RE = re.compile(r"^[a-zA-Z0-9_][a-zA-Z0-9_.\-]*$")
@@ -34,6 +35,7 @@ class IngesterConfig:
     embedder_api_key_env: str = "CF_WORKER_AI_TOKEN"
     contextual_extraction: bool = True   # ADR-0016: feed code entities + vocab into doc extraction
     code_context_tokens: int = 2000      # token budget for the known-code-entities prefix
+    scoring: ScoringConfig = field(default_factory=ScoringConfig)  # ADR-0015 resolved knobs
 
 
 @dataclass(frozen=True)
@@ -110,14 +112,17 @@ def load(config_path: Path | None = None) -> Config:
 
     ingester_kwargs = {
         k: v for k, v in ingester_raw.items()
-        if k in IngesterConfig.__dataclass_fields__
+        if k in IngesterConfig.__dataclass_fields__ and k != "scoring"
     }
     for key in ("summarizer_endpoint", "embedder_endpoint", "summarizer_model", "embedder_model"):
         if key in ingester_kwargs:
             ingester_kwargs[key] = os.path.expandvars(ingester_kwargs[key])
 
+    # ADR-0015 precedence: default → [ingester.scoring] config → CK_SCORING_* env (highest).
+    scoring = ScoringConfig.resolve(ingester_raw.get("scoring", {}), os.environ)
+
     return Config(
-        ingester=IngesterConfig(**ingester_kwargs),
+        ingester=IngesterConfig(**ingester_kwargs, scoring=scoring),
         materializer=MaterializerConfig(
             views=views,
             gap_detection_threshold=materializer_raw.get("gap_detection_threshold", 10),
