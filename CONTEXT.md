@@ -44,6 +44,40 @@ _Avoid_: (to be sharpened via /grill-with-docs)
 A Relationship in the Graph whose endpoint Entities have source files in different Scopes; the bridge that lets a Scope's `AGENTS.md` name its dependencies elsewhere in the portfolio. Derived from LightRAG's native cross-document entity merging plus a source-ID traversal pass at the end of ingest, per [ADR-0009](./docs/adr/0009-cross-scope-relationships-via-source-id.md). Surfacing these at sufficient density is what differentiates Context Kernel from flat vector RAG — see [THEORY.md](./THEORY.md) open question 4.
 _Avoid_: "external relationship" (too generic); "import relationship" (implies code-only).
 
+**Structural edge**:
+A relationship read straight off the syntax tree by a structured handler — `imports`, `inherits`, `implements` — a deterministic, literal fact. The highest-confidence edges in the graph. Per [ADR-0021](./docs/adr/0021-structural-vs-semantic-edge-families.md).
+_Avoid_: conflating with a **Semantic edge** (those are inferred from prose, not parsed).
+
+**Semantic edge**:
+A relationship *inferred* by the LLM extractor from prose — `governed-by`, `realizes`, `motivates`, `supersedes`, `addresses` — a model's reading of intent, not a parsed fact. The extractor's vocabulary is deliberately all relationship verbs with no code-keyword overlap, so the model never conflates an edge kind with a code construct.
+_Avoid_: "implements" for the *code-realizes-a-decision* sense — renamed **realizes** so `implements` means only the literal structural sense (ADR-0021).
+
+### Scoring: confidence and relevance
+
+**Confidence**:
+A node's intrinsic trustworthiness, independent of any query — composed from authority, drift, and centrality. Computed once during the ingestion pass and stored on the record. A stale handoff claim is low-confidence whether or not anyone ever searches for it. Per [ADR-0015](./docs/adr/0015-entity-confidence-scoring.md) and [ADR-0019](./docs/adr/0019-confidence-materialized-relevance-at-query.md).
+_Avoid_: "score" (overloaded — name which score); "relevance" (that is query-relative — see below); "weight" (reserve for edges).
+
+**Relevance**:
+How well a node answers a *specific query* — composed at query time from embedding similarity, the node's Confidence, and structural proximity to the query's anchors. Never stored; assembled per `find` call. Per [ADR-0019](./docs/adr/0019-confidence-materialized-relevance-at-query.md).
+_Avoid_: "confidence" (that is query-independent); "similarity" (only one of relevance's three inputs).
+
+**Drift** (confidence axis):
+How far a node has diverged from the things it describes or depends on — the magnitude of git change to its graph neighbourhood since the node itself last changed. A [0,1] staleness signal that *lowers* confidence (`authority × (1 − drift) × …`). Lives on the **edge**, directional: it loads on the *claimant* end (the describer/dependent) driven by churn to the *referent* end (the described/depended-upon); **code is the reference frame** (it drives drift into docs, never the reverse). The *structural-divergence* axis — there is **no time component**, because code is functionally timeless: trust erodes from change, not from the calendar. Per [ADR-0020](./docs/adr/0020-staleness-as-structural-drift.md).
+_Avoid_: "recency"/"freshness"/"staleness-by-age" (the time-decay model was rejected — drift measures change, not elapsed time); "freshness" also collides with the **Freshness gate**.
+
+**Authority** (confidence axis):
+A source document's trustworthiness from its tier in the document hierarchy — THEORY.md invariants highest, ephemeral handoff notes lowest. A static map from source path to a [0,1] weight. The *who-said-it* axis of Confidence. A node that merges several sources takes the max authority across them.
+_Avoid_: "priority"; "tier" (the tier is the input; authority is the resulting weight).
+
+**Centrality** (confidence axis):
+A node's structural importance — how many other nodes structurally depend on it, from graph in-degree over structural relationships. Stored as its **own** field, deliberately *not* folded into Confidence: a node can be highly central yet untrustworthy (a stale doc whose terms saturate the repo lexicon accretes edges and looks important), so health must read trust and structure independently. The *structural* axis.
+_Avoid_: "importance" (vague); "popularity" (implies mention-count — that is the inflation failure mode, not the goal).
+
+**Documentation gap**:
+A node that is structurally central yet lacks authoritative grounding — high centrality paired with low authority/confidence, or a central code entity with no linked doc entity. The kernel *surfaces* these (ranked by centrality, so the most load-bearing gaps come first) for a human to document or dismiss; it **never fabricates** documentation to close one (that would violate [THEORY.md](./THEORY.md) invariant 1 — the graph is derived, not authored by the kernel). Detected at the entity level (a single ungrounded hub) and the scope level (a directory with entities but no reference doc). Consumed by health scoring.
+_Avoid_: "missing docs" (too broad); "orphan" (implies *no* edges — a gap is the opposite: an over-connected but ungrounded node).
+
 ### Materialized surface
 
 **Materialized file**:
@@ -104,4 +138,4 @@ _Avoid_: "query prefix" (too vague — the format is specific to the model).
 
 ## Flagged ambiguities
 
-<!-- To be filled in as ambiguities surface during /grill-with-docs sessions. -->
+**"Freshness" / the temporal axis** — Resolved 2026-05-30. Two things tangled here. (1) "Freshness" was overloaded: the materialized-file sync mechanism vs. a confidence axis. The sync mechanism keeps the name **Freshness gate**; a bare "freshness" always means the gate. (2) The confidence axis itself was first renamed *Recency*, then **rejected entirely** ([ADR-0020](./docs/adr/0020-staleness-as-structural-drift.md)): the temporal axis is *not* time-decay at all. Code is functionally timeless; trust erodes from **change**, not elapsed time. The axis is now **Drift** — git-measured structural divergence. There is no "recency" or "age" signal anywhere in the model.

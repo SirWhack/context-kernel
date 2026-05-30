@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = "v3"  # bumped: contextual extraction (ADR-0016) changes the prompt
+_CACHE_VERSION = "v4"  # bumped: semantic implements→realizes (ADR-0021) changes the prompt
 
 # Entity kinds the LLM is instructed to extract from documentation.
 # See ADR-0013 for rationale on why these 8 and what was cut.
@@ -33,11 +33,15 @@ ENTITY_KINDS = frozenset({
     "workflow",
     "interface",
     "open-question",
+    "stale-claim",  # ADR-0013 / ADR-0016: doc claim contradicting a known code entity (issue #4)
 })
 
 # Relationship kinds for doc-to-doc and doc-to-code edges.
+# These are the *semantic* (LLM-inferred) family per ADR-0021 — pure relationship verbs
+# with zero overlap against code keywords. Structural `implements`/`inherits`/`imports`
+# are emitted only by the parser handlers, never by the extractor.
 RELATIONSHIP_KINDS = frozenset({
-    "implements",
+    "realizes",
     "governed-by",
     "motivates",
     "supersedes",
@@ -59,7 +63,7 @@ Given a chunk of technical documentation, extract entities and relationships.
 - open-question: An unresolved issue requiring future decision.
 
 ## Relationship kinds (use ONLY these)
-- implements: Code entity realizes a doc entity (e.g., class implements a decision).
+- realizes: A code entity realizes a doc entity (e.g., a class realizes a decision or invariant).
 - governed-by: Code or design is constrained by a rule (invariant, constraint).
 - motivates: One entity is the reason another exists.
 - supersedes: One decision replaces another.

@@ -1,0 +1,324 @@
+"""Scoring — the single home for every confidence/relevance table and formula.
+
+Pure, total, no I/O. Implements ADR-0015 (axes), ADR-0019 (materialize-at-ingest /
+compose-at-query), ADR-0020 (drift), ADR-0021 (edge families). `ingest` and `find`
+*call* this module; they never inline a tier number or a formula, and this module never
+touches the filesystem, git, or the clock.
+
+Knob resolution (per ADR-0015): hardcoded default → `[ingester.scoring]` config →
+`CK_SCORING_*` env var (highest wins). Resolution is a pure function of
+`(config_section, env_mapping)` — `ScoringConfig.resolve(...)`. The caller supplies
+`os.environ`; this module reads nothing on its own.
+
+Errors-out-of-existence (ADR-0019 §10 lens): the scoring functions never raise. Missing
+data yields a defined neutral result — no sources → default authority; size 0 → drift 0;
+no edges → node_drift 0; unknown kind → mid weight.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Protocol
+
+# ── Default tables (ADR-0015) ───────────────────────────────────────────────
+# Tier name → authority weight. Source paths are classified to a tier by `classify_source`.
+AUTHORITY_TIERS: dict[str, float] = {
+    "THEORY": 1.0,        # trunk — constrains everything
+    "ARCHITECTURE": 0.95,  # module ownership contract
+    "ADR": 0.9,           # settled decision
+    "CODE": 0.85,         # always current for what IS
+    "CONTEXT": 0.8,       # canonical vocabulary
+    "REFERENCE": 0.8,     # authored understanding
+    "SPEC": 0.5,          # weeks shelf-life
+    "EPHEMERAL": 0.2,     # disposable context
+}
+AUTHORITY_DEFAULT = 0.3   # unmatched prose — lean low (the HANDOFF lesson)
+
+# Edge-kind → weight (ADR-0015 Axis 4 / ADR-0021 families). Serves both proximity
+# propagation and drift aggregation — one decision, reused.
+EDGE_WEIGHTS: dict[str, float] = {
+    "governed-by": 0.95,  # semantic
+    "implements": 0.9,    # structural (parser)
+    "inherits": 0.9,      # structural (parser)
+    "realizes": 0.9,      # semantic
+    "supersedes": 0.85,   # semantic
+    "addresses": 0.7,     # semantic
+    "motivates": 0.5,     # semantic
+    "imports": 0.3,       # structural — ubiquitous, starved so it doesn't flood
+}
+EDGE_WEIGHT_DEFAULT = 0.5  # unknown kind — mid
+
+# Dependency-bearing kinds that count toward centrality (ADR-0015 Axis 3 / ADR-0021).
+# Structural `implements`/`inherits` + semantic `realizes`/`governed-by`. `imports`
+# (pure noise) and the weak/historical kinds are excluded.
+CENTRALITY_KINDS = frozenset({"implements", "inherits", "realizes", "governed-by"})
+
+DRIFT_HOPS = 1            # propagation hops for drift (ADR-0020 — one hop, no cascade)
+PROXIMITY_HOPS = 1        # propagation hops for find proximity (ADR-0015 Axis 4)
+CENTRALITY_IN_FIND = False  # whether centrality enters the find score (off — relevance ≠ centrality)
+
+_ENV_PREFIX = "CK_SCORING_"
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    """Resolved knobs. Construct via `resolve`; `DEFAULTS` is the no-override instance."""
+
+    authority_tiers: Mapping[str, float] = field(default_factory=lambda: dict(AUTHORITY_TIERS))
+    authority_default: float = AUTHORITY_DEFAULT
+    edge_weights: Mapping[str, float] = field(default_factory=lambda: dict(EDGE_WEIGHTS))
+    edge_weight_default: float = EDGE_WEIGHT_DEFAULT
+    centrality_kinds: frozenset[str] = CENTRALITY_KINDS
+    drift_hops: int = DRIFT_HOPS
+    proximity_hops: int = PROXIMITY_HOPS
+    centrality_in_find: bool = CENTRALITY_IN_FIND
+
+    @classmethod
+    def resolve(
+        cls,
+        section: Mapping[str, object] | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> "ScoringConfig":
+        """Build a config from defaults, overlaying config section then env (highest).
+
+        Pure: `env` is passed in (e.g. `os.environ`), never read here. A malformed knob
+        value raises (a misconfigured sweep should be loud) — this is config-time, distinct
+        from the never-raise contract on the scoring functions themselves.
+        """
+        section = section or {}
+        env = env or {}
+
+        tiers = dict(AUTHORITY_TIERS)
+        tiers.update({str(k).upper(): float(v) for k, v in _sub(section, "authority_tiers").items()})
+        authority_default = float(section.get("authority_default", AUTHORITY_DEFAULT))
+
+        weights = dict(EDGE_WEIGHTS)
+        weights.update({str(k).lower(): float(v) for k, v in _sub(section, "edge_weights").items()})
+        edge_weight_default = float(section.get("edge_weight_default", EDGE_WEIGHT_DEFAULT))
+
+        drift_hops = int(section.get("drift_hops", DRIFT_HOPS))
+        proximity_hops = int(section.get("proximity_hops", PROXIMITY_HOPS))
+        centrality_in_find = _as_bool(section.get("centrality_in_find", CENTRALITY_IN_FIND))
+
+        for key, raw in env.items():
+            if not key.startswith(_ENV_PREFIX):
+                continue
+            rest = key[len(_ENV_PREFIX):]
+            if rest == "AUTHORITY_DEFAULT":
+                authority_default = float(raw)
+            elif rest.startswith("AUTHORITY_"):
+                tiers[rest[len("AUTHORITY_"):].upper()] = float(raw)
+            elif rest == "EDGE_WEIGHT_DEFAULT":
+                edge_weight_default = float(raw)
+            elif rest.startswith("EDGE_WEIGHT_"):
+                # Hyphenated kinds (e.g. governed-by) are config-only; env uses lowercase.
+                weights[rest[len("EDGE_WEIGHT_"):].lower()] = float(raw)
+            elif rest == "DRIFT_HOPS":
+                drift_hops = int(raw)
+            elif rest == "PROXIMITY_HOPS":
+                proximity_hops = int(raw)
+            elif rest == "CENTRALITY_IN_FIND":
+                centrality_in_find = _as_bool(raw)
+
+        return cls(
+            authority_tiers=tiers,
+            authority_default=authority_default,
+            edge_weights=weights,
+            edge_weight_default=edge_weight_default,
+            centrality_kinds=CENTRALITY_KINDS,
+            drift_hops=drift_hops,
+            proximity_hops=proximity_hops,
+            centrality_in_find=centrality_in_find,
+        )
+
+
+DEFAULTS = ScoringConfig()
+
+
+def _sub(section: Mapping[str, object], key: str) -> Mapping[str, object]:
+    val = section.get(key, {})
+    return val if isinstance(val, Mapping) else {}
+
+
+def _as_bool(v: object) -> bool:
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# ── Axis 1: Authority ───────────────────────────────────────────────────────
+
+_ADR_NAME = re.compile(r"^\d{3,4}[-_].*\.md$")
+
+
+def classify_source(path: str) -> str:
+    """Map a source path to an authority tier name, or "" for the catch-all (prose).
+
+    Code is matched by extension, so the catch-all only ever applies to prose — an
+    unrecognized doc is far likelier to be scratch than a missed THEORY.md.
+    """
+    p = path.replace("\\", "/").lower()
+    base = p.rsplit("/", 1)[-1]
+
+    if base == "theory.md":
+        return "THEORY"
+    if base == "architecture.md":
+        return "ARCHITECTURE"
+    if "docs/adr/" in p or "/adr/" in p or _ADR_NAME.match(base):
+        return "ADR"
+    if p.endswith((".py", ".ts", ".tsx", ".js")):
+        return "CODE"
+    if base == "context.md":
+        return "CONTEXT"
+    if "reference" in base or "reference/" in p:
+        return "REFERENCE"
+    if base == "plan.md" or "docs/features/" in p or "specs/" in p:
+        return "SPEC"
+    if any(tok in base for tok in ("readme", "handoff", "notes", "scratch", "todo")):
+        return "EPHEMERAL"
+    return ""
+
+
+def authority(sources: Iterable[str], cfg: ScoringConfig = DEFAULTS) -> float:
+    """Max authority over a node's source paths. No sources / all-unmatched → default."""
+    best = cfg.authority_default
+    seen = False
+    for src in sources:
+        tier = classify_source(src)
+        weight = cfg.authority_tiers.get(tier, cfg.authority_default)
+        if not seen or weight > best:
+            best = weight
+            seen = True
+    return best
+
+
+# ── Axis 4 weight (shared with drift aggregation) ───────────────────────────
+
+
+def edge_weight(kind: str, cfg: ScoringConfig = DEFAULTS) -> float:
+    """Static f(kind). Unknown kind → mid default."""
+    return cfg.edge_weights.get(kind, cfg.edge_weight_default)
+
+
+# ── Axis 3: Centrality ──────────────────────────────────────────────────────
+
+
+class _Edge(Protocol):
+    source_id: str
+    target_id: str
+    kind: str
+
+
+def centrality(
+    node_sources: Mapping[str, Sequence[str]],
+    relationships: Iterable[_Edge],
+    cfg: ScoringConfig = DEFAULTS,
+) -> dict[str, float]:
+    """Distinct-source in-degree over centrality kinds, normalized to [0,1] by graph max.
+
+    For each target, count the number of *distinct source documents* contributing an
+    in-edge — not raw edge multiplicity. Capping any one document's contribution at 1 is
+    the defense against lexicon inflation: ten concepts minted by one chatty doc count
+    once; ten *different* documents are genuine centrality. Self-loops are ignored.
+
+    `node_sources` maps entity id → its source paths. A node absent from the map (or with
+    no sources) contributes nothing.
+    """
+    docs_by_target: dict[str, set[str]] = {}
+    for rel in relationships:
+        if rel.kind not in cfg.centrality_kinds:
+            continue
+        if rel.source_id == rel.target_id:
+            continue
+        srcs = node_sources.get(rel.source_id) or ()
+        if not srcs:
+            continue
+        docs_by_target.setdefault(rel.target_id, set()).update(srcs)
+
+    if not docs_by_target:
+        return {nid: 0.0 for nid in node_sources}
+
+    counts = {tid: len(docs) for tid, docs in docs_by_target.items()}
+    peak = max(counts.values())
+    if peak <= 0:
+        return {nid: 0.0 for nid in node_sources}
+
+    return {nid: counts.get(nid, 0) / peak for nid in node_sources}
+
+
+# ── Axis 2 (replaced): Drift (ADR-0020) ─────────────────────────────────────
+
+
+def edge_drift(lines_changed: int, referent_size: int) -> float:
+    """Normalized churn to the referent: min(1, lines/size). Size 0 → 0 (nothing to drift)."""
+    if referent_size <= 0 or lines_changed <= 0:
+        return 0.0
+    return min(1.0, lines_changed / referent_size)
+
+
+def node_drift(edges: Iterable[tuple[float, float]]) -> float:
+    """Edge-weighted mean of a node's claimant-side (drift, weight) pairs. No edges → 0.
+
+    Proportional, not max: a large mostly-current doc isn't buried by one churned
+    reference, while a small focused doc still collapses to "stale" because the drifted
+    edge dominates its mean. (Health flagging uses a sensitive `max` instead — that lives
+    in the #8 rollup, not here.)
+    """
+    num = 0.0
+    den = 0.0
+    for drift, weight in edges:
+        num += weight * drift
+        den += weight
+    if den <= 0:
+        return 0.0
+    return num / den
+
+
+def confidence(authority_: float, node_drift_: float) -> float:
+    """authority × (1 − node_drift). Centrality is kept separate (never folded in)."""
+    return authority_ * (1.0 - node_drift_)
+
+
+# ── Composition (ADR-0019: at query / ranking time) ─────────────────────────
+
+
+def proximity(
+    candidate_id: str,
+    seed_ids: Sequence[str],
+    adjacency: Mapping[str, Sequence[tuple[str, str]]],
+    cfg: ScoringConfig = DEFAULTS,
+) -> float:
+    """1 + max edge_weight to a 1-hop seed neighbour, else 1.
+
+    A boost (≥ 1), never a gate: an unconnected but highly-similar result keeps
+    proximity = 1 and survives on similarity × confidence alone. `adjacency` maps a seed
+    id → its neighbours as (neighbour_id, edge_kind).
+    """
+    best = 0.0
+    for seed in seed_ids:
+        for neighbour_id, kind in adjacency.get(seed, ()):  # noqa: E741
+            if neighbour_id == candidate_id:
+                w = edge_weight(kind, cfg)
+                if w > best:
+                    best = w
+    return 1.0 + best
+
+
+def find_score(similarity: float, confidence_: float, proximity_: float) -> float:
+    """similarity × confidence × proximity (ADR-0015 find composite)."""
+    return similarity * confidence_ * proximity_
+
+
+def ranking_weight(confidence_: float, centrality_: float) -> float:
+    """confidence × (1 + centrality) — summarize_scope ordering (entity_weight, ADR-0015).
+
+    Centrality is a **boost, not a gate** (same principle as proximity): real-data ingest
+    showed pure-code scopes give almost every entity centrality 0 (only `inherits` bears
+    centrality among code; `realizes`/`governed-by` need the doc pass), so the original
+    `confidence × centrality` collapsed nearly all code entities to a 0 tie and erased the
+    confidence signal. The `1 +` keeps confidence as the ordering backbone while central
+    entities still rise.
+    """
+    return confidence_ * (1.0 + centrality_)

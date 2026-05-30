@@ -68,11 +68,18 @@ class LightRAGStore(KnowledgeStore):
                 aliases=tuple(e.get("aliases", ())),
                 sources=tuple(e.get("sources", ())),
                 kinds=tuple(e.get("kinds", ())),
+                source_tier=e.get("source_tier", 0.0),
+                centrality=e.get("centrality", 0.0),
+                confidence=e.get("confidence", 1.0),
             )
             for e in raw.get("entities", [])
         }
         raw_rels = [
-            Relationship(source_id=r["source_id"], target_id=r["target_id"], kind=r["kind"], description=r["description"])
+            Relationship(
+                source_id=r["source_id"], target_id=r["target_id"], kind=r["kind"], description=r["description"],
+                weight=r.get("weight", 0.5),
+                drift=r.get("drift", 0.0),
+            )
             for r in raw.get("relationships", [])
         ]
         seen: set[tuple[str, str, str]] = set()
@@ -111,11 +118,13 @@ class LightRAGStore(KnowledgeStore):
             "commit": str(self._commit),
             "entities": [
                 {"id": e.id, "name": e.name, "kind": e.kind, "description": e.description,
-                 "aliases": list(e.aliases), "sources": list(e.sources), "kinds": list(e.kinds)}
+                 "aliases": list(e.aliases), "sources": list(e.sources), "kinds": list(e.kinds),
+                 "source_tier": e.source_tier, "centrality": e.centrality, "confidence": e.confidence}
                 for e in self._entities.values()
             ],
             "relationships": [
-                {"source_id": r.source_id, "target_id": r.target_id, "kind": r.kind, "description": r.description}
+                {"source_id": r.source_id, "target_id": r.target_id, "kind": r.kind, "description": r.description,
+                 "weight": r.weight, "drift": r.drift}
                 for r in self._relationships
             ],
             "summaries": [
@@ -172,12 +181,18 @@ class LightRAGStore(KnowledgeStore):
             if scope is not None and chunk.scope != scope:
                 continue
             score = _cosine_sim(query_embedding, chunk.embedding)
+            # Attach the stored confidence so `find` can compose relevance without
+            # re-reading the graph. Entity chunks are addressed by their entity id;
+            # summary chunks have no entity → neutral handles. No policy here.
+            ent = self._entities.get(chunk.id) if chunk.kind == "entity" else None
             scored.append(SearchResult(
                 chunk_text=chunk.chunk_text,
                 source_path=chunk.source_path,
                 score=score,
                 kind=chunk.kind,
                 scope=chunk.scope,
+                entity_id=ent.id if ent else None,
+                confidence=ent.confidence if ent else 1.0,
             ))
         scored.sort(key=lambda r: r.score, reverse=True)
         return scored[:k]

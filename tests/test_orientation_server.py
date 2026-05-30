@@ -8,11 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from context_kernel.config_store import IngesterConfig
-from context_kernel.graph.protocol import EmbeddedChunk, Entity, SearchResult, Summary
+from context_kernel.graph.protocol import (
+    EmbeddedChunk, Entity, Neighbor, Relationship, SearchResult, Summary,
+)
 from context_kernel.ingester import ingest
 from context_kernel.materializer.headers import FreshnessHeader, render
-from context_kernel.orientation_server.tools import assemble
+from context_kernel.orientation_server.tools import assemble, rank_by_relevance
 from context_kernel.orientation_server.tools import find, overview
+from context_kernel.scoring import ScoringConfig
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 
 
@@ -125,6 +128,78 @@ class TestOverview:
         scope = ScopePath(Path("missing"))
         result = overview(scope, 4096, tmp_path)
         assert "No materialized overview" in result
+
+
+# ── Relevance reranking (Slice 5) ──────────────────────────────────────
+
+
+def _result(eid, score, confidence):
+    return SearchResult(
+        chunk_text=eid, source_path=f"{eid}.py", score=score, kind="entity",
+        scope=ScopePath(Path(".")), entity_id=eid, confidence=confidence,
+    )
+
+
+class _RerankStore:
+    """Minimal store exposing adjacency + entities for rank_by_relevance."""
+
+    def __init__(self, neighbors=None, entities=None):
+        self._neighbors = neighbors or {}
+        self._entities = entities or {}
+
+    def get_neighbors(self, eid):
+        return self._neighbors.get(eid, [])
+
+    def get_entity(self, eid):
+        return self._entities.get(eid)
+
+
+def _neighbor(target_id, kind):
+    return Neighbor(
+        entity=Entity(id=target_id, name=target_id, kind="class", description=""),
+        relationship=Relationship(source_id="?", target_id=target_id, kind=kind, description=""),
+    )
+
+
+class TestRankByRelevance:
+    def test_confidence_reweights_similarity(self):
+        # A wins on similarity but is untrustworthy; B's confidence carries it past A.
+        a = _result("A", score=0.9, confidence=0.2)   # 0.18
+        b = _result("B", score=0.6, confidence=0.9)   # 0.54
+        ranked = rank_by_relevance([a, b], _RerankStore(), ScoringConfig())
+        assert [r.entity_id for r in ranked] == ["B", "A"]
+
+    def test_proximity_lifts_seed_adjacent_hit(self):
+        seed = _result("S", score=0.8, confidence=0.5)
+        near = _result("N", score=0.5, confidence=0.5)
+        far = _result("F", score=0.5, confidence=0.5)
+        store = _RerankStore(neighbors={"S": [_neighbor("N", "realizes")]})
+        ranked = rank_by_relevance([seed, near, far], store, ScoringConfig())
+        assert ranked.index(near) < ranked.index(far)  # adjacency boost breaks the tie
+
+    def test_unconnected_strong_hit_not_zeroed(self):
+        strong = _result("X", score=0.95, confidence=0.85)  # unconnected
+        weak = _result("Y", score=0.3, confidence=0.9)
+        store = _RerankStore(neighbors={"Y": [_neighbor("Z", "governed-by")]})
+        ranked = rank_by_relevance([strong, weak], store, ScoringConfig())
+        assert ranked[0] is strong  # proximity is a boost, never a gate
+
+    def test_centrality_off_by_default(self):
+        plain = _result("P", score=0.5, confidence=0.5)     # 0.25
+        central = _result("C", score=0.4, confidence=0.5)   # 0.20 unless centrality counts
+        store = _RerankStore(entities={"C": Entity(
+            id="C", name="C", kind="class", description="", centrality=1.0)})
+        ranked = rank_by_relevance([plain, central], store, ScoringConfig())
+        assert [r.entity_id for r in ranked] == ["P", "C"]
+
+    def test_centrality_in_find_when_enabled(self):
+        plain = _result("P", score=0.5, confidence=0.5)     # 0.25
+        central = _result("C", score=0.4, confidence=0.5)   # 0.20 × (1+1.0) = 0.40
+        store = _RerankStore(entities={"C": Entity(
+            id="C", name="C", kind="class", description="", centrality=1.0)})
+        cfg = ScoringConfig(centrality_in_find=True)
+        ranked = rank_by_relevance([plain, central], store, cfg)
+        assert [r.entity_id for r in ranked] == ["C", "P"]
 
 
 # ── Find (unit — no embedder) ─────────────────────────────────────────
