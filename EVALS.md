@@ -124,6 +124,37 @@ retrieval:
    prompt changes leak into cost. Re-run neighbours, not just the target row.
 5. **Record corpus + commit + model** next to every number.
 
+## Tuning knobs (scoring)
+
+The confidence/relevance scoring system (ADR-0015, ADR-0019) is **eval-tunable**. Every
+knob resolves through three layers, highest wins:
+
+```
+hardcoded default  →  .context-kernel/config.toml [ingester.scoring]  →  CK_SCORING_* env var
+```
+
+The env layer exists so an eval sweep overrides a knob **per run without editing files** —
+`CK_SCORING_AUTHORITY_DEFAULT=0.4 ck ingest …`. The knobs:
+
+| Env var | Controls | Default |
+|---|---|---|
+| `CK_SCORING_AUTHORITY_DEFAULT` | catch-all tier for unmatched prose | `0.3` |
+| `CK_SCORING_AUTHORITY_<TIER>` | authority of a named tier (`THEORY`, `ADR`, `CODE`, …) | per ADR-0015 table |
+| `CK_SCORING_DRIFT_HOPS` | propagation hops for drift (ADR-0020) | `1` |
+| `CK_SCORING_DRIFT_NORM` | churn-normalization mode (`size-relative` \| `absolute`) | `size-relative` |
+| `CK_SCORING_EDGE_WEIGHT_<KIND>` | proximity weight of an edge kind | per ADR-0015 table |
+| `CK_SCORING_PROXIMITY_HOPS` | seed-neighbour hop limit in `find` | TBD |
+| `CK_SCORING_CENTRALITY_IN_FIND` | whether centrality factors into find relevance (`0`/`1`) | TBD |
+
+> The temporal knob is **not** a time decay — there is no half-life. Drift (ADR-0020) is
+> git-measured structural change, so its only knobs are *how far it propagates* and *how
+> churn magnitude is normalized*.
+
+Because confidence is **materialized at ingest** (ADR-0019), an authority/drift/centrality
+knob change requires a **re-ingest** to take effect; proximity/find knobs apply at query
+time and take effect immediately. A scoring sweep is therefore: set `CK_SCORING_*`, re-ingest
+the eval corpus, score against gold, record `(knob values, corpus hash, model)` with the result.
+
 ## Existing harnesses
 
 - **`scripts/h2_eval.py`** — orientation-session eval. Scores Claude Code transcripts
