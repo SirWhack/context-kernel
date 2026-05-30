@@ -217,7 +217,24 @@ def resolve(
         b = normalize(name)
         if b in ambiguous_bases:
             return None                          # ambiguous and not same-file → drop, never guess
-        return name_index.get(b) or name_index.get(name)
+        hit = name_index.get(b) or name_index.get(name)
+        if hit:
+            return hit
+        # Dotted import/inherits target — e.g. "open_webui.retrieval.vector.main.VectorDBBase"
+        # or "fastapi.APIRouter". The full dotted path never matches a bare entity name, so
+        # internal dependency edges were dropped wholesale and the graph went ~95% edgeless
+        # (contradicting ADR-0021, which treats `imports`/`inherits` as first-class facts).
+        # Resolve to the imported SYMBOL (last segment), then the MODULE (penultimate),
+        # honoring the same "never guess an ambiguous base" rule. External libs stay unresolved.
+        if "." in name:
+            segs = [s for s in name.split(".") if s]
+            for seg in ([segs[-1]] + ([segs[-2]] if len(segs) >= 2 else [])):
+                nb = normalize(seg)
+                if nb and nb not in ambiguous_bases:
+                    hit = name_index.get(nb) or name_index.get(seg)
+                    if hit:
+                        return hit
+        return None
 
     seen: set[tuple[str, str, str]] = set()
     resolved: list[ResolvedRelationship] = []

@@ -99,3 +99,44 @@ def test_stoplist_names_never_merge_across_files():
     ]
     nodes, _, _ = resolve(ents, [])
     assert len(nodes) == 3                          # each stays local
+
+
+def R(src, tgt, kind="imports", src_file="vec/factory.py"):
+    return ExtractedRelationship(source_name=src, target_name=tgt, kind=kind, source_file=src_file)
+
+
+class TestDottedImportResolution:
+    """`from pkg.mod import Thing` emits target 'pkg.mod.Thing'; the whole dotted path never
+    matched a bare entity name, so internal dependency edges were dropped wholesale and the
+    graph went ~95% edgeless (regression for ADR-0021 first-class structural edges)."""
+
+    def test_resolves_to_imported_symbol_last_segment(self):
+        ents = [E("factory", "module", "vec/factory.py"),
+                E("VectorDBBase", "class", "vec/main.py")]
+        rels = [R("factory", "open_webui.retrieval.vector.main.VectorDBBase")]
+        nodes, edges, _ = resolve(ents, rels)
+        ids = {n.id for n in nodes}
+        assert len(edges) == 1 and edges[0].kind == "imports"
+        assert edges[0].source_id in ids and edges[0].target_id in ids
+
+    def test_resolves_to_module_penultimate_segment(self):
+        ents = [E("factory", "module", "vec/factory.py"),
+                E("settings", "module", "vec/settings.py")]
+        rels = [R("factory", "open_webui.settings")]  # last seg 'settings' = the module
+        _, edges, _ = resolve(ents, rels)
+        assert len(edges) == 1
+
+    def test_external_import_is_dropped(self):
+        ents = [E("factory", "module", "vec/factory.py")]
+        rels = [R("factory", "fastapi.APIRouter")]   # no internal entity → correctly dropped
+        _, edges, _ = resolve(ents, rels)
+        assert edges == []
+
+    def test_ambiguous_symbol_not_guessed(self):
+        # 'Client' defined in two files → ambiguous base → a dotted import to it must NOT guess
+        ents = [E("factory", "module", "vec/factory.py"),
+                E("Client", "class", "a/client.py", emb=[1.0, 0.0]),
+                E("Client", "class", "b/client.py", emb=[0.0, 1.0])]
+        rels = [R("factory", "somepkg.Client")]
+        _, edges, _ = resolve(ents, rels)
+        assert edges == []
