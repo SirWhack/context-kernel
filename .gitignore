@@ -1,6 +1,12 @@
 # Context Kernel runtime — opaque per-portfolio operational dir
 .context-kernel/
 
+# Test repos — external corpora cloned for dogfooding, never committed
+test-repos/
+
+# Eval run logs — contain corpus-derived content (records/harnesses ARE committed)
+evals/runs/*.log
+
 # Scratch / working docs (local-only, never committed)
 # H2 spike artifacts — session logs, prompts, notes, review (all local, contain corpus data)
 h2-*
