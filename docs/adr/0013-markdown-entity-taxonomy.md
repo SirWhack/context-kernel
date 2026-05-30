@@ -28,7 +28,7 @@ Technical documentation (ADRs, specs, architecture docs, theory docs) carries th
 
 | Kind | Semantics |
 |---|---|
-| `implements` | Code entity realizes a doc entity. |
+| `realizes` | Code entity realizes a doc entity. (Renamed from `implements` by [ADR-0021](./0021-structural-vs-semantic-edge-families.md) to de-overload the structural `implements`.) |
 | `governed-by` | Code/design constrained by a rule. |
 | `motivates` | One entity is the reason another exists. |
 | `supersedes` | One decision replaces another. |

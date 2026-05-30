@@ -20,7 +20,11 @@ from context_kernel.ingester.handlers import (
     RawRelationship,
     TypeScriptHandler,
 )
-from context_kernel.ingester.summarizer import _parse_llm_response
+from context_kernel.ingester.summarizer import (
+    _SYSTEM_PROMPT,
+    RELATIONSHIP_KINDS,
+    _parse_llm_response,
+)
 from context_kernel.config_store import IngesterConfig
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 
@@ -672,6 +676,20 @@ class TestSummarizerParsing:
         assert len(ents) == 2
         assert {e.kind for e in ents} == {"invariant", "constraint"}
         assert len(rels) == 1
+
+    def test_semantic_vocabulary_uses_realizes_not_implements(self):
+        # ADR-0021: the extractor's semantic vocabulary has zero code-keyword overlap.
+        # `implements` is structural-only (parser handlers); the LLM kind is `realizes`.
+        assert "realizes" in RELATIONSHIP_KINDS
+        assert "implements" not in RELATIONSHIP_KINDS
+        assert "- realizes:" in _SYSTEM_PROMPT
+        assert "- implements:" not in _SYSTEM_PROMPT
+
+    def test_realizes_relationship_parsed(self):
+        raw = '{"entities": [], "relationships": [{"source_name": "LLMSummarizer", "target_name": "ADR-0004", "kind": "realizes", "description": "code realizes the decision"}]}'
+        _, rels = _parse_llm_response(raw)
+        assert len(rels) == 1
+        assert rels[0].kind == "realizes"
 
 
 # ── Change Detection ────────────────────────────────────────────────────

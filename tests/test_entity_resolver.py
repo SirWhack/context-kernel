@@ -56,7 +56,7 @@ def test_relationship_resolves_across_files_after_merge():
         E("StepPanel", "interface", "docs/16.md"),
     ]
     # edge authored in the doc chunk, naming two code symbols
-    rels = [ExtractedRelationship("TurnPanelResponder", "StepPanel", "implements", "docs/16.md")]
+    rels = [ExtractedRelationship("TurnPanelResponder", "StepPanel", "realizes", "docs/16.md")]
     nodes, edges, stats = resolve(ents, rels)
     assert len(edges) == 1
     ids = {n.id for n in nodes}
@@ -82,7 +82,7 @@ def test_file_path_target_resolves_to_module_node():
         E("agentic RAG", "decision", "docs/02-agent-loop.md"),
     ]
     rels = [
-        ExtractedRelationship("agentic RAG", "src/bot/agent.py", "implements", "docs/02-agent-loop.md"),
+        ExtractedRelationship("agentic RAG", "src/bot/agent.py", "realizes", "docs/02-agent-loop.md"),
         ExtractedRelationship("agentic RAG", "agent.py", "mentions", "docs/02-agent-loop.md"),  # basename
     ]
     nodes, edges, stats = resolve(ents, rels)
