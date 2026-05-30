@@ -119,6 +119,51 @@ class TestPersistence:
         assert len(store2.get_neighbors("e1")) == 1
 
 
+class TestScoringFieldsPersistence:
+    """Slice 1 (ADR-0015/0020): scoring axes round-trip; legacy state loads neutral."""
+
+    def test_scoring_fields_round_trip(self, tmp_path):
+        graph_dir = tmp_path / "graph"
+        store = LightRAGStore(graph_dir)
+        e = Entity(
+            id="e1", name="A", kind="module", description="d",
+            source_tier=0.9, centrality=0.42, confidence=0.81,
+        )
+        r = Relationship(
+            source_id="e1", target_id="e2", kind="realizes", description="",
+            weight=0.9, drift=0.7,
+        )
+        e2 = _entity("e2", "B")
+        store.upsert(GraphCommit("c1"), [e, e2], [r], [])
+
+        reloaded = LightRAGStore(graph_dir)
+        got = reloaded.get_entity("e1")
+        assert (got.source_tier, got.centrality, got.confidence) == (0.9, 0.42, 0.81)
+        rel = reloaded.get_neighbors("e1")[0].relationship
+        assert (rel.weight, rel.drift) == (0.9, 0.7)
+
+    def test_legacy_state_without_scoring_fields_loads_neutral(self, tmp_path):
+        """An old state.json predating the scoring fields loads with neutral defaults."""
+        graph_dir = tmp_path / "graph"
+        store = LightRAGStore(graph_dir)
+        store.upsert(GraphCommit("c1"), [_entity("e1", "A"), _entity("e2", "B")], [_rel("e1", "e2")], [])
+
+        import json
+        state_path = graph_dir / "state.json"
+        raw = json.loads(state_path.read_text())
+        for e in raw["entities"]:
+            e.pop("source_tier", None); e.pop("centrality", None); e.pop("confidence", None)
+        for r in raw["relationships"]:
+            r.pop("weight", None); r.pop("drift", None)
+        state_path.write_text(json.dumps(raw))
+
+        reloaded = LightRAGStore(graph_dir)
+        got = reloaded.get_entity("e1")
+        assert (got.source_tier, got.centrality, got.confidence) == (0.0, 0.0, 1.0)
+        rel = reloaded.get_neighbors("e1")[0].relationship
+        assert (rel.weight, rel.drift) == (0.5, 0.0)
+
+
 class TestGraphCommit:
     def test_commit_tracks_latest(self, tmp_path):
         store = LightRAGStore(tmp_path / "graph")

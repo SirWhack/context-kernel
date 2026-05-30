@@ -30,6 +30,11 @@ class Entity:
     aliases: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     kinds: tuple[str, ...] = ()
+    # Scoring axes (ADR-0015 / ADR-0020). Materialized at ingest, stored on the record.
+    # Defaults are neutral so an unscored or legacy node carries no penalty.
+    source_tier: float = 0.0      # max authority over `sources` (0 = unscored)
+    centrality: float = 0.0       # distinct-source in-degree, normalized; never folded into confidence
+    confidence: float = 1.0       # authority × (1 − node_drift); 1.0 = fully trusted / unscored
 
 
 @dataclass(frozen=True)
@@ -40,6 +45,10 @@ class Relationship:
     target_id: str
     kind: str
     description: str
+    # Scoring (ADR-0015 Axis 4 / ADR-0020). `weight` is a static f(kind); `drift` is the
+    # edge's directional staleness (referent→claimant), loaded on the claimant end.
+    weight: float = 0.5           # edge_weight(kind); 0.5 = unknown-kind mid weight
+    drift: float = 0.0            # normalized churn to the referent since the claimant last changed
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,10 @@ class SearchResult:
     score: float
     kind: str  # "entity" or "summary"
     scope: ScopePath
+    # Composition handles (ADR-0019): let `find` rerank by stored confidence + proximity
+    # without re-reading the graph. Populated by `search_similar`; neutral when unknown.
+    entity_id: str | None = None
+    confidence: float = 1.0
 
 
 class KnowledgeStore(Protocol):
