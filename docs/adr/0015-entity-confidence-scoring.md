@@ -123,9 +123,18 @@ results, not merely *central* ones; the knob exists only so an eval can test a c
 
 For `summarize_scope()`:
 ```
-entity_weight = authority × (1 − drift) × centrality
+entity_weight = authority × (1 − drift) × (1 + centrality)
+              = confidence × (1 + centrality)
 ```
 Entities sorted by weight before being sent to the LLM. The prompt instructs the LLM to emphasize high-weight entities.
+
+> **Refinement (boost, not gate).** The original form multiplied by `centrality`
+> directly. Real-data ingest (FEAT01, 190 code entities) showed that pure-code scopes
+> give almost every entity centrality 0 — only `inherits` bears centrality among code,
+> while `realizes`/`governed-by` arrive with the doc pass — so `× centrality` collapsed
+> ~99% of code entities to a 0 tie and erased the confidence ordering entirely. Centrality
+> is therefore a **boost (`1 + centrality`), never a gate**, exactly as proximity is in
+> the find score: confidence is the ordering backbone, central entities rise above it.
 
 For `find`:
 ```

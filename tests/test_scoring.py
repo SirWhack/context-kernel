@@ -209,8 +209,13 @@ class TestFindScore:
 
 
 class TestRankingWeight:
-    def test_confidence_times_centrality(self):
-        assert scoring.ranking_weight(0.8, 0.5) == pytest.approx(0.4)
+    def test_centrality_boosts_confidence(self):
+        assert scoring.ranking_weight(0.8, 0.5) == pytest.approx(1.2)
+
+    def test_zero_centrality_does_not_zero_confidence(self):
+        # boost-not-gate: a peripheral entity still orders by its confidence
+        assert scoring.ranking_weight(0.8, 0.0) == pytest.approx(0.8)
+        assert scoring.ranking_weight(0.85, 0.0) > scoring.ranking_weight(0.3, 0.0)
 
 
 # ── Knob resolution (default → config → env) ────────────────────────────────

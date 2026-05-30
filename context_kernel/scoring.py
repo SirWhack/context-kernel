@@ -312,5 +312,13 @@ def find_score(similarity: float, confidence_: float, proximity_: float) -> floa
 
 
 def ranking_weight(confidence_: float, centrality_: float) -> float:
-    """confidence × centrality — summarize_scope ordering (entity_weight, ADR-0015)."""
-    return confidence_ * centrality_
+    """confidence × (1 + centrality) — summarize_scope ordering (entity_weight, ADR-0015).
+
+    Centrality is a **boost, not a gate** (same principle as proximity): real-data ingest
+    showed pure-code scopes give almost every entity centrality 0 (only `inherits` bears
+    centrality among code; `realizes`/`governed-by` need the doc pass), so the original
+    `confidence × centrality` collapsed nearly all code entities to a 0 tie and erased the
+    confidence signal. The `1 +` keeps confidence as the ordering backbone while central
+    entities still rise.
+    """
+    return confidence_ * (1.0 + centrality_)
