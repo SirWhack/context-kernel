@@ -293,6 +293,20 @@ def ingest(
             log.warning("No summarizer configured, skipping %s", rel_path)
     phase2_ms = int((time.monotonic() - t_phase2) * 1000)
 
+    # Doc-vs-code contradiction detection (issue #4, ADR-0016). The extractor flags a doc
+    # claim that contradicts a known code entity as kind `stale-claim`. Surface them HERE and
+    # drop them from the resolution input: resolution is code-anchored (ADR-0017) and would
+    # otherwise merge a stale-claim into the very code node it contradicts, erasing the signal.
+    # Relationships dangling off a dropped stale-claim resolve to no endpoint and self-drop.
+    contradictions = [e for e in raw_entities if e.kind == "stale-claim"]
+    if contradictions:
+        raw_entities = [e for e in raw_entities if e.kind != "stale-claim"]
+        for c in contradictions:
+            log.warning(
+                "doc-vs-code contradiction: %s claims %r%s",
+                c.source_file, c.name, f" — {c.description}" if c.description else "",
+            )
+
     # Phase 2.5: embed raw entity descriptions BEFORE resolution — embeddings are the
     # collision guard's second signal (ADR-0017) and become the canonical node embeddings.
     t_phase3 = time.monotonic()
@@ -413,6 +427,7 @@ def ingest(
         "files_processed": len(all_files),
         "entities": len(all_entities),
         "relationships": len(all_relationships),
+        "contradictions": len(contradictions),
         "graph_commit": str(commit),
         "duration_ms": elapsed,
         "phase_structured_ms": phase1_ms,

@@ -33,6 +33,7 @@ ENTITY_KINDS = frozenset({
     "workflow",
     "interface",
     "open-question",
+    "stale-claim",  # ADR-0013 / ADR-0016: doc claim contradicting a known code entity (issue #4)
 })
 
 # Relationship kinds for doc-to-doc and doc-to-code edges.

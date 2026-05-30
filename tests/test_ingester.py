@@ -1232,3 +1232,51 @@ class TestIngestLogging:
         assert rec.relationships >= 0
         assert rec.graph_commit is not None
         assert rec.duration_ms >= 0
+
+
+class _StaleClaimSummarizer(_FakeSummarizer):
+    """Summarizer that flags a doc-vs-code contradiction as a `stale-claim` (ADR-0016)."""
+
+    def summarize(self, text: str, *, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]]:
+        self.calls.append(text)
+        self.last_context = context
+        # The doc claims LLMSummarizer is unbuilt, but the .py file shows it exists.
+        entities = [RawEntity(name="LLMSummarizer", kind="stale-claim",
+                              description="HANDOFF.md says the summarizer is not yet wired")]
+        return entities, []
+
+
+class TestContradictionDetection:
+    """Issue #4 / ADR-0016: doc-vs-code contradictions are surfaced and kept out of the graph."""
+
+    def _ingest(self, tmp_path, caplog):
+        import logging
+        (tmp_path / "summarizer.py").write_text("class LLMSummarizer:\n    def summarize(self): ...\n")
+        (tmp_path / "HANDOFF.md").write_text("# Handoff\n\nThe summarizer is not yet wired.\n")
+        store = _FakeStore()
+        with caplog.at_level(logging.INFO, logger="context_kernel.ingester"):
+            ingest(store, tmp_path, tmp_path, IngesterConfig(), summarizer=_StaleClaimSummarizer())
+        return store
+
+    def test_stale_claim_not_persisted_as_entity(self, tmp_path, caplog):
+        store = self._ingest(tmp_path, caplog)
+        assert "stale-claim" not in {e.kind for e in store.entities}
+        assert all("stale-claim" not in e.kinds for e in store.entities)
+
+    def test_code_entity_uncontaminated(self, tmp_path, caplog):
+        # The contradiction must not be merged into the code node it contradicts (ADR-0017).
+        store = self._ingest(tmp_path, caplog)
+        code = [e for e in store.entities if e.name == "LLMSummarizer"]
+        assert len(code) == 1
+        assert code[0].kind != "stale-claim"
+        assert "stale-claim" not in code[0].kinds
+
+    def test_contradiction_is_logged(self, tmp_path, caplog):
+        self._ingest(tmp_path, caplog)
+        warnings = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("contradiction" in m and "HANDOFF.md" in m for m in warnings)
+
+    def test_contradiction_count_in_ingested_log(self, tmp_path, caplog):
+        self._ingest(tmp_path, caplog)
+        rec = next(r for r in caplog.records if r.getMessage() == "ingested")
+        assert rec.contradictions == 1
