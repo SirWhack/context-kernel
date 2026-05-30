@@ -127,25 +127,40 @@ def build_prompt(arm: str, repo_abs: Path, tasks: list) -> str:
     return PREAMBLE[arm] + FORMAT.format(repo=repo_abs, n=len(tasks), questions=qs)
 
 
-def write_gold(repo: str, tasks: list) -> Path:
-    out = SESSIONS / repo / "gold.toml"
+def write_gold(out_dir: Path, tasks: list) -> Path:
+    out = out_dir / "gold.toml"
     out.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for i, t in enumerate(tasks):
-        files = ", ".join(json.dumps(g) for g in t["gold"])
+        files = ", ".join(json.dumps(g) for g in t.get("gold", []))
         lines.append(f"[Q{i + 1}]\nfiles = [{files}]\n")
     out.write_text("\n".join(lines))
     return out
 
 
-def run_arm(repo: str, arm: str, tasks: list, base_env: dict, timeout: int) -> Path:
+def write_rubric(out_dir: Path, tasks: list) -> Path | None:
+    """Emit the key-fact rubric (knowledge round) as facts = [[alt, alt], ...] per question.
+    Returns None if no task carries a rubric (location rounds skip this)."""
+    if not any(t.get("rubric") for t in tasks):
+        return None
+    out = out_dir / "rubric.toml"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for i, t in enumerate(tasks):
+        facts = t.get("rubric") or []
+        body = ", ".join("[" + ", ".join(json.dumps(p) for p in fact) + "]" for fact in facts)
+        lines.append(f"[Q{i + 1}]\nfacts = [{body}]\n")
+    out.write_text("\n".join(lines))
+    return out
+
+
+def run_arm(repo: str, arm: str, tasks: list, base_env: dict, timeout: int, out_dir: Path) -> Path:
     repo_abs = ROOT / "test-repos" / repo
     cfg = repo_abs / ".context-kernel" / "config.toml"
     if not cfg.exists():
         sys.exit(f"repo not ingested (no config): {cfg}")
 
     prompt = build_prompt(arm, repo_abs, tasks)
-    out_dir = SESSIONS / repo
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"battery-{arm}.jsonl"
     err_file = out_dir / f"battery-{arm}.err"
@@ -185,14 +200,16 @@ def run_arm(repo: str, arm: str, tasks: list, base_env: dict, timeout: int) -> P
     return out_file
 
 
-def score(repo: str, base_env: dict) -> None:
-    out_dir = SESSIONS / repo
+def score(out_dir: Path, repo: str) -> None:
     k, g = out_dir / "battery-kernel.jsonl", out_dir / "battery-grep.jsonl"
     gold = out_dir / "gold.toml"
+    rubric = out_dir / "rubric.toml"
     if not (k.exists() and g.exists()):
         sys.exit("both arms must be run before scoring")
     cmd = [str(ROOT / ".venv/bin/python"), str(ROOT / "scripts/h2_eval.py"),
            str(k), str(g), "--gold", str(gold)]
+    if rubric.exists():
+        cmd += ["--rubric", str(rubric)]
     env = {**os.environ, "CK_PORTFOLIO": f"test-repos/{repo}"}
     print("\n" + "=" * 70)
     subprocess.run(cmd, cwd=ROOT, env=env)
@@ -200,25 +217,31 @@ def score(repo: str, base_env: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", required=True)
+    ap.add_argument("--repo", required=True, help="repo under test-repos/ (config + portfolio)")
+    ap.add_argument("--taskset", help="task file name (tasks/<taskset>.json); defaults to --repo. "
+                    "Use to run a different question set against the same repo, e.g. open-webui-knowledge.")
     ap.add_argument("--arm", choices=["kernel", "grep"], help="run one arm only")
     ap.add_argument("--no-score", action="store_true")
     ap.add_argument("--score-only", action="store_true")
     ap.add_argument("--timeout", type=int, default=600)
     args = ap.parse_args()
 
-    data = load_tasks(args.repo)
+    taskset = args.taskset or args.repo
+    data = load_tasks(taskset)
+    repo = data.get("repo", args.repo)
     tasks = data["tasks"]
+    out_dir = SESSIONS / taskset
     base_env = load_env(ROOT / ".env")
-    write_gold(args.repo, tasks)
+    write_gold(out_dir, tasks)
+    write_rubric(out_dir, tasks)
 
     if not args.score_only:
         arms = [args.arm] if args.arm else ["kernel", "grep"]
         for arm in arms:
-            run_arm(args.repo, arm, tasks, base_env, args.timeout)
+            run_arm(repo, arm, tasks, base_env, args.timeout, out_dir)
 
     if not args.no_score and not args.arm:
-        score(args.repo, base_env)
+        score(out_dir, repo)
     return 0
 
 

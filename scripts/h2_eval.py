@@ -260,6 +260,25 @@ def audit_recall(parsed, gold):
     return out
 
 
+def audit_rubric(parsed, rubric):
+    """Key-fact rubric scoring for the knowledge/synthesis round. Each question has a list of
+    facts; a fact is a list of alternative patterns and counts as HIT if ANY pattern appears
+    (case-insensitive) in that question's answer section. Score = facts hit / total facts.
+    This scores answer CORRECTNESS, not which files were named."""
+    sections = section_split(parsed["final"])
+    out = {}
+    for q, facts in rubric.items():
+        body = sections.get(q, ("", ""))[1].lower()
+        hits, missed = 0, []
+        for fact in facts:
+            if any(pat.lower() in body for pat in fact):
+                hits += 1
+            else:
+                missed.append(fact[0])
+        out[q] = {"hits": hits, "total": len(facts), "missed": missed}
+    return out
+
+
 def audit_grounding(parsed, gold, root):
     """Gold files the arm actually OPENED (a Read tool call), not merely named in the prose.
     This is the memory-proof axis: on a public/memorized repo, an arm can recall the right
@@ -274,7 +293,7 @@ def audit_grounding(parsed, gold, root):
 
 
 # ── reporting ────────────────────────────────────────────────────────────────
-def report(parsed, root, aspects, gold):
+def report(parsed, root, aspects, gold, rubric=None):
     u = parsed["usage"]; fresh = u["in"] + u["out"]
     tcount = len(parsed["tools"])
     print(f"\n{'='*72}\n  {parsed['arm'].upper():7} {Path(parsed['path']).name}")
@@ -300,25 +319,35 @@ def report(parsed, root, aspects, gold):
     for q, r in sorted(grd.items()):
         print(f"  GROUND Q{q}: {r['opened']}/{r['gold']} opened"
               + (f"  not-opened={r['missed']}" if r['missed'] else " ✓"))
+    rub = audit_rubric(parsed, rubric) if rubric else {}
+    for q, r in sorted(rub.items()):
+        print(f"  RUBRIC Q{q}: {r['hits']}/{r['total']} facts"
+              + (f"  missed={r['missed']}" if r['missed'] else " ✓"))
     g_open = sum(r["opened"] for r in grd.values())
     g_tot = sum(r["gold"] for r in grd.values())
     r_found = sum(r["found"] for r in rec.values())
+    rub_hit = sum(r["hits"] for r in rub.values())
+    rub_tot = sum(r["total"] for r in rub.values())
     return {"arm": parsed["arm"], "calls": tcount, "failed": parsed["failed"],
             "dup": parsed["dup_reads"], "fresh": fresh, "missing": len(missing),
             "precision": prec, "recall": rec,
-            "grounded": (g_open, g_tot), "recalled": (r_found, g_tot)}
+            "grounded": (g_open, g_tot), "recalled": (r_found, g_tot),
+            "rubric": (rub_hit, rub_tot)}
 
 
 def compare(rows):
     print(f"\n{'='*72}\n  COMPARE")
+    has_rubric = any(r.get("rubric", (0, 0))[1] for r in rows)
+    rub_h = f" {'rubric':>8}" if has_rubric else ""
     hdr = (f"  {'arm':8} {'calls':>5} {'failed':>6} {'dup':>4} {'fresh_tok':>9} {'halluc':>6} "
-           f"{'grounded':>9} {'recalled':>9}")
+           f"{'grounded':>9} {'recalled':>9}{rub_h}")
     print(hdr); print("  " + "-" * (len(hdr) - 2))
     for r in rows:
         g = f"{r['grounded'][0]}/{r['grounded'][1]}"
         rc = f"{r['recalled'][0]}/{r['recalled'][1]}"
+        rb = (" " + f"{r['rubric'][0]}/{r['rubric'][1]}".rjust(8)) if has_rubric else ""
         print(f"  {r['arm']:8} {r['calls']:>5} {r['failed']:>6} {r['dup']:>4} {r['fresh']:>9} "
-              f"{r['missing']:>6} {g:>9} {rc:>9}")
+              f"{r['missing']:>6} {g:>9} {rc:>9}{rb}")
     # aspect precision side by side
     keys = sorted({k for r in rows for k in r["precision"]})
     for k in keys:
@@ -335,6 +364,8 @@ def main():
     ap.add_argument("--dir", help="a Claude project dir; takes the newest --last sessions")
     ap.add_argument("--last", type=int, default=2, help="with --dir, how many newest sessions")
     ap.add_argument("--gold", help="optional gold.toml with [Q1] files=[...] sections for recall")
+    ap.add_argument("--rubric", help="optional rubric.toml with [Q1] facts=[[alt,alt],...] for "
+                    "key-fact answer scoring (knowledge round)")
     args = ap.parse_args()
 
     P = Path(os.environ.get("CK_PORTFOLIO", "")).expanduser()
@@ -361,8 +392,13 @@ def main():
         g = tomllib.loads(Path(args.gold).expanduser().read_text())
         gold = {int(re.sub(r"\D", "", q)): v.get("files", []) for q, v in g.items()}
 
+    rubric = {}
+    if args.rubric:
+        rb = tomllib.loads(Path(args.rubric).expanduser().read_text())
+        rubric = {int(re.sub(r"\D", "", q)): v.get("facts", []) for q, v in rb.items()}
+
     print(f"corpus root: {P}\naspect concepts audited: {list(aspects)}")
-    rows = [report(parse_transcript(p), P, aspects, gold) for p in paths]
+    rows = [report(parse_transcript(p), P, aspects, gold, rubric) for p in paths]
     if len(rows) > 1:
         compare(rows)
 

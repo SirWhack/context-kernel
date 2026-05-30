@@ -1,0 +1,91 @@
+{
+  "repo": "open-webui",
+  "portfolio": "test-repos/open-webui",
+  "note": "KNOWLEDGE / SYNTHESIS round (mixed retrieval-fact + architecture). Answers scored by a key-fact rubric (facts hit / total), not file lists. `gold` is kept only as a secondary grounding signal (did the arm open a relevant file). Rubric facts verified by hand against the source 2026-05-30; each fact is a list of alternative patterns, case-insensitive substring, any match = hit.",
+  "tasks": [
+    {
+      "id": "k1-vector-arch",
+      "kind": "synthesis",
+      "question": "Open WebUI supports many vector databases interchangeably. Explain the architecture that makes this possible: what selects the active backend at startup, the common contract every backend must implement, and the concrete steps you would take to add a brand-new vector-DB backend.",
+      "gold": [
+        "backend/open_webui/retrieval/vector/factory.py",
+        "backend/open_webui/retrieval/vector/main.py",
+        "backend/open_webui/retrieval/vector/type.py"
+      ],
+      "rubric": [
+        ["VECTOR_DB"],
+        ["get_vector", "factory", "Vector.get_vector"],
+        ["VectorDBBase", "abstract base", "ABC", "abstractmethod", "base class"],
+        ["insert", "upsert"],
+        ["search", "query"],
+        ["VECTOR_DB_CLIENT"],
+        ["add a case", "new case", "register", "VectorType", "match", "implement the", "subclass"]
+      ]
+    },
+    {
+      "id": "k2-persistentconfig",
+      "kind": "synthesis",
+      "question": "Configuration here is editable at runtime, not just read from the environment. Explain how the PersistentConfig mechanism works: what value is used on startup, how it interacts with environment variables, where a runtime change is stored, and whether that change survives a restart.",
+      "gold": [
+        "backend/open_webui/config.py"
+      ],
+      "rubric": [
+        ["env_value", "environment variable", "env default", "default value from env"],
+        ["config_value", "database", "persisted value", "latest database entry", "config store", "config.json"],
+        ["overrides", "takes precedence", "db wins", "persisted value is used", "preferred over"],
+        ["ENABLE_PERSISTENT_CONFIG"],
+        ["save", "async_save", "save_to_db", "written to the database", "persisted to"],
+        ["restart", "next startup", "reloaded on", "survives", "loaded on start"]
+      ]
+    },
+    {
+      "id": "k3-rag-trace",
+      "kind": "synthesis",
+      "question": "Trace what happens when a retrieval (RAG) query is processed end-to-end: how the query text becomes an embedding, which client object searches the vector store, and the key functions involved. Mention how hybrid search differs from plain vector search.",
+      "gold": [
+        "backend/open_webui/retrieval/utils.py",
+        "backend/open_webui/retrieval/vector/factory.py"
+      ],
+      "rubric": [
+        ["embedding_function", "get_embedding_function", "embed the query", "encode", "RAG_EMBEDDING_QUERY_PREFIX"],
+        ["query_doc", "query_collection"],
+        ["VECTOR_DB_CLIENT", "ASYNC_VECTOR_DB_CLIENT"],
+        [".search", "search("],
+        ["top-k", "top k", "limit", "k results", " k="],
+        ["hybrid", "rerank", "reranking", "BM25"]
+      ]
+    },
+    {
+      "id": "k4-auth-validate",
+      "kind": "retrieval",
+      "question": "How does the backend validate a request's auth token? Name the function that decodes it and the signing scheme, what claims the token carries, how revocation / sign-out is enforced, and how an API key works as an alternative credential.",
+      "gold": [
+        "backend/open_webui/utils/auth.py"
+      ],
+      "rubric": [
+        ["decode_token", "jwt.decode"],
+        ["JWT", "SESSION_SECRET", "HS256", "ALGORITHM"],
+        ["jti", "iat", "exp", "expire"],
+        ["is_valid_token", "revoked", "revoked_at", "sign-out", "logout", "redis"],
+        ["api_key", "get_current_user_by_api_key", "API key"]
+      ]
+    },
+    {
+      "id": "k5-db-migrations",
+      "kind": "retrieval",
+      "question": "What ORM / database toolkit does the backend use, how are the synchronous and asynchronous engines set up, and how are schema migrations managed (which tool, and where do migration scripts live)?",
+      "gold": [
+        "backend/open_webui/internal/db.py",
+        "backend/open_webui/migrations/env.py"
+      ],
+      "rubric": [
+        ["SQLAlchemy"],
+        ["create_engine"],
+        ["create_async_engine", "async engine", "psycopg", "AsyncSession"],
+        ["sessionmaker", "scoped_session", "Session"],
+        ["Alembic"],
+        ["migrations/versions", "versions", "migrations directory", "migrations/env"]
+      ]
+    }
+  ]
+}
