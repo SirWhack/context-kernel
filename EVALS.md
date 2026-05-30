@@ -6,7 +6,7 @@ ARCHITECTURE.md (the modules the evals exercise).
 
 ## The problem evals exist to solve
 
-The unit suite (`tests/`, 274 tests, ~8s) proves the *plumbing* is correct: chunks
+The unit suite (`tests/`, 358 tests, ~6s) proves the *plumbing* is correct: chunks
 flow, IDs are deterministic, blobs round-trip, freshness headers parse. It proves
 nothing about *quality*, because every test substitutes `_FakeSummarizer` /
 `_FakeStore` for the LLM and the graph. The fake always returns the canned answer.
@@ -55,6 +55,8 @@ doc is the registry of those procedures and the methodology for adding more.
 | **Contradiction detection** | Are doc-vs-code contradictions surfaced? | Code-state ground truth (entity exists ⇒ "unbuilt" claim is stale) | _(needed — see below)_ |
 | Entity resolution | Merge rate; over/under-merging | Known alias clusters; dup-rate on a fixed corpus | `verify_graph.py` (partial) |
 | `find` retrieval | Top-k contains the right chunk? | Gold query→chunk pairs | _(needed)_ |
+| **Confidence/drift scoring** | Do stale-referent / ephemeral claims score below current, authoritative ones? | Git-state ground truth (referent churn since claimant commit) + source-tier gold | `test_drift.py` (unit discrimination); planted-corpus sweep _(needed — see below)_ |
+| **Documentation gap** | Is load-bearing-but-undocumented code surfaced (high centrality, no doc edge)? | Centrality + absence of a doc↔code edge on a fixed corpus | _(needed — rolls up into #8)_ |
 | Orientation cost/precision | Fewer tool calls than grep; no hallucinated paths | Path resolution + primitive counting | `scripts/h2_eval.py` |
 | Freshness | Stale read ever served? | Header vs source-tree hash | Covered by unit tests + invariant |
 
@@ -108,6 +110,59 @@ with a known-correct verdict — the seed of the gold set.
 
 Until step 3's harness exists, issue #4 stays **open** — "implemented, not eval'd."
 
+## Case study: confidence / drift scoring (issue #6)
+
+**The change.** Every entity carries `confidence = authority × (1 − drift)` and a
+separate `centrality`, materialized at ingest (ADR-0015/0019). Drift is git-measured
+structural change to a claim's referent since the claim last moved (ADR-0020), loaded on
+the doc (claimant) side of doc↔code edges. `find` reranks by `similarity × confidence ×
+proximity`; `summarize_scope` orders by `confidence × centrality`.
+
+**What the unit tests prove (the plumbing).** `tests/test_scoring.py` pins every formula
+table-driven; `tests/test_drift.py` runs `ingest()` over a *real temporary git repo* and
+shows the discrimination holds end-to-end: a doc whose referent was rewritten after the
+doc's commit gets `confidence < authority` with the drift on the realizes-edge; a stable
+doc keeps full confidence; code referenced by two distinct docs scores centrality 1.0.
+This is stronger than the fake-summarizer baseline because the **git oracle is real** —
+but the corpus is hand-planted and tiny.
+
+**What the unit tests do NOT prove — and what the large eval must.** Whether the scoring
+*ranks the way a human would* on a real portfolio:
+
+- **Discrimination** — on a corpus of mixed-authority docs with known stale/current
+  verdicts, does the confidence ordering put the HANDOFF-class notes at the bottom and
+  THEORY/ADR invariants at the top? Score: rank correlation against a gold ordering.
+- **Drift calibration** — do the edges flagged high-drift correspond to referents that
+  actually moved? Oracle: `git log --numstat` on the referent since the claimant commit —
+  the same computation, recomputed independently, must agree.
+- **Knob sensitivity** — sweep `CK_SCORING_*` (authority catch-all, edge weights,
+  centrality-in-find) and record where the discrimination metric peaks. This is the
+  payload of the env knob layer.
+
+**The canonical fixture: the HANDOFF.md incident, again.** The same stale note that seeds
+the #4 contradiction gold is a drift case — `LLMSummarizer` churned through implementation
+after the note's last commit, so the note→`LLMSummarizer` edge should carry high drift and
+collapse the note's confidence. One known-correct verdict, shared across the #4 and #6
+oracles (principle 3: one oracle, many call sites).
+
+**How to run the eval (procedure to build before the large run):**
+
+1. **Corpus.** A small git portfolio with planted scoring defects: high-authority docs
+   whose referents have/haven't churned, ephemeral hubs with inflated lexicon centrality,
+   load-bearing-but-undocumented code (the documentation-gap row). Gold lives in a local
+   `evals/scoring/gold.toml` — `(entity, expected_band, referent_churned)` per row.
+2. **Sweep.** For each `CK_SCORING_*` point: re-ingest the corpus (confidence is
+   materialized → re-ingest required), then score the stored `confidence` / `centrality` /
+   edge `drift` against gold. `find`/proximity knobs apply at query time, no re-ingest.
+3. **Score.** Rank correlation of confidence-ordering vs gold band; drift agreement vs an
+   independent `git log --numstat` recomputation; documentation-gap recall.
+4. **Record** `(knob values, corpus hash, graph_commit, model id)` per point; the peak is
+   the recommended default, the curve is the regression guard.
+
+Until step 3's harness exists, issue #6 ships the **mechanism** (formulas + ingest +
+find, all unit-green) but the *tuned defaults* remain provisional — the planted-corpus
+sweep is the deferred "large eval," batched with #4 per the closing note.
+
 ## How to evaluate any change
 
 Before merging a change that touches extraction, resolution, materialization, or
@@ -141,14 +196,15 @@ The env layer exists so an eval sweep overrides a knob **per run without editing
 | `CK_SCORING_AUTHORITY_DEFAULT` | catch-all tier for unmatched prose | `0.3` |
 | `CK_SCORING_AUTHORITY_<TIER>` | authority of a named tier (`THEORY`, `ADR`, `CODE`, …) | per ADR-0015 table |
 | `CK_SCORING_DRIFT_HOPS` | propagation hops for drift (ADR-0020) | `1` |
-| `CK_SCORING_DRIFT_NORM` | churn-normalization mode (`size-relative` \| `absolute`) | `size-relative` |
-| `CK_SCORING_EDGE_WEIGHT_<KIND>` | proximity weight of an edge kind | per ADR-0015 table |
-| `CK_SCORING_PROXIMITY_HOPS` | seed-neighbour hop limit in `find` | TBD |
-| `CK_SCORING_CENTRALITY_IN_FIND` | whether centrality factors into find relevance (`0`/`1`) | TBD |
+| `CK_SCORING_EDGE_WEIGHT_<KIND>` | proximity weight of an edge kind (lowercase kind; hyphenated kinds via config only) | per ADR-0015 table |
+| `CK_SCORING_PROXIMITY_HOPS` | seed-neighbour hop limit in `find` | `1` |
+| `CK_SCORING_CENTRALITY_IN_FIND` | whether centrality factors into find relevance (`0`/`1`) | `0` |
 
 > The temporal knob is **not** a time decay — there is no half-life. Drift (ADR-0020) is
-> git-measured structural change, so its only knobs are *how far it propagates* and *how
-> churn magnitude is normalized*.
+> git-measured structural change. Churn is **always** size-relative
+> (`min(1, lines_changed / referent_size)`); there is no `DRIFT_NORM` mode switch — its
+> only live knob is propagation distance (`DRIFT_HOPS`). `DRIFT_HOPS > 1` is accepted by
+> the resolver but not yet honoured at compute time (drift is 1-hop in v1).
 
 Because confidence is **materialized at ingest** (ADR-0019), an authority/drift/centrality
 knob change requires a **re-ingest** to take effect; proximity/find knobs apply at query
@@ -169,7 +225,8 @@ the eval corpus, score against gold, record `(knob values, corpus hash, model)` 
 ## Before the large eval (current state)
 
 Features are landing faster than their harnesses (#4 done, eval pending; #6 confidence
-scoring and #7 CodeSpan still to come). The plan is to batch the feature work, then
-build the corpus + harnesses once and run a single large eval across all dimensions —
-rather than re-ingesting per feature. This doc is the running list of what that large
-eval must cover; each new feature adds its row and its fixture here as it lands.
+scoring now landed as mechanism, sweep pending; #7 CodeSpan still to come). The plan is
+to batch the feature work, then build the corpus + harnesses once and run a single large
+eval across all dimensions — rather than re-ingesting per feature. This doc is the running
+list of what that large eval must cover; each new feature adds its row and its fixture
+here as it lands.

@@ -4,7 +4,9 @@ Implementation plan for GitHub issue #6. Implements **ADR-0015** (axes), **ADR-0
 (materialize-at-ingest / compose-at-query), **ADR-0020** (drift), **ADR-0021** (edge
 families). Read those first — this doc is *how*, they are *why*.
 
-> Status: not started. Design is locked (commit `9196093`). No code written yet.
+> Status: **mechanism complete** (Slices 0–6 merged, 358 tests green). Design locked at
+> `9196093`. Remaining: the planted-corpus `CK_SCORING_*` sweep (the deferred "large eval",
+> batched with #4) and a real `ck ingest` confidence-spread check on this repo.
 
 ## 1. What we're building
 
@@ -176,32 +178,32 @@ that alters materialized output — needs a golden-file test).
 
 Suggested PR cadence: `T1` solo → `T2+T3` → `T4` → `T5+T6` → `T7`. Five PRs.
 
-- [ ] **T0 · Commit FEAT01.md** — plan on-record before code.
-- [ ] **T1 · Slice 0 — rename `implements`→`realizes`** (independent, ships alone)
-  - [ ] `summarizer.py`: `RELATIONSHIP_KINDS` + `_SYSTEM_PROMPT` semantic verb
-  - [ ] bump `_CACHE_VERSION` v3→v4 (prompt changed → invalidate cache)
-  - [ ] tests: extractor emits `realizes`; structural `implements` untouched
-- [ ] **T2 · Slice 1 — schema + serialization**
-  - [ ] `protocol.py`: `Entity += source_tier, centrality, confidence`; `Relationship += weight, drift`; `SearchResult += entity_id, confidence`
-  - [ ] `lightrag_adapter.py`: round-trip via `.get(..., default)`
-  - [ ] tests: round-trip; legacy `state.json` loads neutral
-- [ ] **T3 · Slice 2 — `scoring.py` (pure) + config knobs**
-  - [ ] `scoring.py`: all §3 functions + tables
-  - [ ] `config_store.py`: `[ingester.scoring]` + `CK_SCORING_*` resolution *(refinement #1)*
-  - [ ] tests: table-driven — authority precedence/catch-all, distinct-source centrality (lexicon-inflation), proximity boost-not-gate, env precedence
-- [ ] **T4 · Slice 3 — drift via git churn** (centerpiece)
-  - [ ] `change_detection.py`: `commit_of`, `churn`, `size` — cached, safe defaults
-  - [ ] `ingest()`: referent/claimant classification, per-edge + node drift
-  - [ ] tests: temp-git-repo — code churn→doc drift; doc edit→reset; untracked→0; stable code→0
-- [ ] **T5 · Slice 4 — ingest scoring pass**
-  - [ ] `ingest()`: `source_tier`, `centrality`, `confidence`, `Relationship.weight`
-  - [ ] `summarize_scope` sort by `ranking_weight` *(refinement #2 — golden-file test)*
-  - [ ] tests: e2e w/ `_FakeStore` — stale doc low, central code first, HANDOFF near-zero
-- [ ] **T6 · Slice 5 — relevance in `find`**
-  - [ ] `search_similar` populates `entity_id/confidence`
-  - [ ] `tools.find`: top-3 seeds, 1-hop proximity, rank by `find_score`; centrality off by default
-  - [ ] tests: confidence rerank; proximity lift; unconnected strong hit not zeroed
-- [ ] **T7 · Slice 6 — eval hooks**
-  - [ ] planted-defect corpus + `CK_SCORING_*` sweep; record `(knobs, corpus hash, model)`
-  - [ ] confidence/drift + documentation-gap rows in EVALS.md
-- [ ] **T8 · Close-out** — suite green; real ingest shows confidence spread + non-zero drift; re-ingest migration; close #6, unblock #8
+- [x] **T0 · Commit FEAT01.md** — `b305193`
+- [x] **T1 · Slice 0 — rename `implements`→`realizes`** — `1f7bffc`
+  - [x] `summarizer.py`: `RELATIONSHIP_KINDS` + `_SYSTEM_PROMPT`; `_CACHE_VERSION` v3→v4
+  - [x] tests: extractor emits `realizes`; structural `implements` untouched
+- [x] **T2 · Slice 1 — schema + serialization** — `6c0e895`
+  - [x] `protocol.py`: `Entity += source_tier, centrality, confidence`; `Relationship += weight, drift`; `SearchResult += entity_id, confidence`
+  - [x] `lightrag_adapter.py`: round-trip via `.get(..., default)`; legacy `state.json` loads neutral
+- [x] **T3 · Slice 2 — `scoring.py` (pure) + config knobs** — `e843ee0`
+  - [x] `scoring.py`: all §3 functions + tables
+  - [x] `config_store.py`: `[ingester.scoring]` + `CK_SCORING_*` resolution *(refinement #1)*
+  - [x] tests: 60 table-driven — authority catch-all, lexicon-inflation centrality, proximity boost-not-gate, env precedence
+- [x] **T4 · Slice 3 — drift via git churn** (centerpiece) — `d4698ac`
+  - [x] `change_detection.py`: `commit_of`, `churn`, `size` — cached, safe defaults
+  - [x] tests: temp-git-repo — code churn→doc drift; doc edit→reset; untracked→0; stable code→0
+- [x] **T5 · Slice 3b/4 — ingest scoring pass** — `807d78b`
+  - [x] `ingest()`: referent/claimant drift, `source_tier`, `centrality`, `confidence`, `Relationship.weight`
+  - [x] `summarize_scope` sort by `ranking_weight` *(refinement #2)*
+  - [x] tests: e2e over real git repo — stale doc < authority, stable doc full, code→2 docs central
+- [x] **T6 · Slice 5 — relevance in `find`** — `fed5f26`
+  - [x] `search_similar` populates `entity_id/confidence`
+  - [x] `tools.rank_by_relevance`: top-3 seeds, 1-hop proximity, rank by `find_score`; centrality off by default
+  - [x] tests: confidence rerank; proximity lift; unconnected strong hit not zeroed; centrality on/off
+- [x] **T7 · Slice 6 — eval hooks** *(mechanism + harness spec; sweep deferred)*
+  - [x] confidence/drift + documentation-gap rows + case study in EVALS.md; knob defaults resolved
+  - [ ] planted-defect corpus + `CK_SCORING_*` sweep — **deferred to the batched large eval (#4 + #6)**
+- [ ] **T8 · Close-out**
+  - [x] full suite green (358)
+  - [ ] real `ck ingest` on this repo shows confidence spread + non-zero drift *(needs LLM servers — manual)*
+  - [ ] close #6 (comment: mechanism done, sweep pending); unblock #8
