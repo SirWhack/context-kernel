@@ -13,6 +13,9 @@ dependencies = [
     "httpx>=0.27",
     "mcp>=1.0",
     "numpy==2.4.6",
+    "tree-sitter-rust>=0.24",
+    "pyyaml>=6.0",
+    "pypdf>=4.0",
 ]
 
 [project.scripts]

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from context_kernel.graph.addressing import hash_bytes
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, Relationship, SearchResult, Summary
-from context_kernel.ingester import ingest
+from context_kernel.ingester import ingest, ingest_portfolio
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import (
     changed_since,
@@ -1258,6 +1258,91 @@ class TestIngestProjectNamespacing:
         ingest(store, tmp_path, tmp_path, IngesterConfig(), project_name="my-proj")
         summary_scopes = [str(s.scope) for s in store.summaries]
         assert all("my-proj" in s for s in summary_scopes)
+
+    def test_portfolio_ingest_writes_one_combined_snapshot(self, tmp_path):
+        dir_a = tmp_path / "a"
+        dir_b = tmp_path / "b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "app.py").write_text("class AppA:\n    pass\n")
+        (dir_b / "app.py").write_text("class AppB:\n    pass\n")
+
+        store = _FakeStore()
+        commit1 = ingest_portfolio(
+            store,
+            tmp_path,
+            tmp_path,
+            IngesterConfig(),
+            [(Path("a"), "a"), (Path("b"), "b")],
+        )
+
+        names = {e.name for e in store.entities}
+        assert {"AppA", "AppB"} <= names
+        assert {str(s) for s in store.scope_entities} == {"a", "b"}
+
+        (dir_a / "app.py").write_text("class AppA:\n    VALUE = 1\n")
+        commit2 = ingest_portfolio(
+            store,
+            tmp_path,
+            tmp_path,
+            IngesterConfig(),
+            [(Path("a"), "a"), (Path("b"), "b")],
+        )
+        assert commit2 != commit1
+
+    def test_ingest_descriptions_use_relative_paths(self, tmp_path):
+        (tmp_path / "app.py").write_text('"""Doc."""\nclass App:\n    pass\n')
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+        assert store.entities
+        assert all(str(tmp_path) not in e.description for e in store.entities)
+        assert any("app.py" in e.description for e in store.entities)
+
+    def test_curated_entity_concepts_ground_into_portfolio_graph(self, tmp_path):
+        (tmp_path / "ontology.toml").write_text(
+            "[concepts.panel]\n"
+            'prefLabel = "panel"\n'
+            'type = "entity"\n'
+            'altLabel = ["StepPanel"]\n'
+            'definition = "A UI panel concept."\n'
+        )
+        (tmp_path / "ui.py").write_text("class StepPanel:\n    pass\n")
+        store = _FakeStore()
+        ingest(store, tmp_path, tmp_path, IngesterConfig())
+
+        concept = next(e for e in store.entities if e.kind == "concept" and e.name == "panel")
+        step = next(e for e in store.entities if e.name == "StepPanel")
+        edges = [r for r in store.relationships if r.kind == "implemented-by"]
+        assert concept.source_tier == 0.8
+        assert any(r.source_id == concept.id and r.target_id == step.id for r in edges)
+
+    def test_portfolio_concept_hub_bridges_projects(self, tmp_path):
+        (tmp_path / "ontology.toml").write_text(
+            "[concepts.panel]\n"
+            'prefLabel = "panel"\n'
+            'type = "entity"\n'
+            'altLabel = ["StepPanel", "Panel"]\n'
+        )
+        dir_a = tmp_path / "frontend"
+        dir_b = tmp_path / "backend"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        (dir_a / "ui.tsx").write_text("export class StepPanel {}\n")
+        (dir_b / "panel.py").write_text("class Panel:\n    pass\n")
+
+        store = _FakeStore()
+        ingest_portfolio(
+            store,
+            tmp_path,
+            tmp_path,
+            IngesterConfig(),
+            [(Path("frontend"), "frontend"), (Path("backend"), "backend")],
+        )
+
+        concept = next(e for e in store.entities if e.kind == "concept" and e.name == "panel")
+        targets = {r.target_id for r in store.relationships if r.source_id == concept.id and r.kind == "implemented-by"}
+        target_names = {e.name for e in store.entities if e.id in targets}
+        assert {"StepPanel", "Panel"} <= target_names
 
 
 # ── Ingester observability (S8) ────────────────────────────────────────

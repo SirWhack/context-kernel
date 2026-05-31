@@ -251,10 +251,13 @@ class LightRAGStore(KnowledgeStore):
     ) -> None:
         self._commit = graph_commit
 
-        for e in entities:
-            self._entities[e.id] = e
+        # `upsert` receives the complete graph snapshot for this GraphCommit. Replacing
+        # rather than merging keeps deleted/renamed entities, stale relationships, and old
+        # vector chunks from surviving into the next materialization.
+        self._entities = {e.id: e for e in entities}
 
-        existing_keys = {(r.source_id, r.target_id, r.kind) for r in self._relationships}
+        existing_keys: set[tuple[str, str, str]] = set()
+        self._relationships = []
         for r in relationships:
             key = (r.source_id, r.target_id, r.kind)
             if key not in existing_keys:
@@ -265,9 +268,9 @@ class LightRAGStore(KnowledgeStore):
             self._adj.setdefault(rel.source_id, []).append(i)
             self._adj.setdefault(rel.target_id, []).append(i)
 
-        for s in summaries:
-            self._summaries[str(s.scope)] = s
+        self._summaries = {str(s.scope): s for s in summaries}
 
+        self._chunks = []
         if chunks:
             existing_ids = {c.id for c in self._chunks}
             for c in chunks:
@@ -275,6 +278,7 @@ class LightRAGStore(KnowledgeStore):
                     self._chunks.append(c)
                     existing_ids.add(c.id)
 
+        self._scope_entities = {}
         if scope_entities:
             for scope, ents in scope_entities.items():
                 self._scope_entities[str(scope)] = [e.id for e in ents]

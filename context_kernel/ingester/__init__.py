@@ -15,6 +15,7 @@ from context_kernel import scoring
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore, Relationship, Summary
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import walk_source_files
+from context_kernel.ingester.concepts import ground_entity_concepts, load_ontology
 from context_kernel.ingester.entity_resolver import (
     CODE_EXT, ExtractedEntity, ExtractedRelationship, resolve as resolve_entities,
 )
@@ -36,12 +37,30 @@ if TYPE_CHECKING:
     from context_kernel.ingester.embedder import Embedder
     from context_kernel.types import LLMMetrics
 
-__all__ = ["IngestionError", "ingest"]
+__all__ = ["IngestionError", "ingest", "ingest_portfolio"]
 
 log = logging.getLogger(__name__)
 
-_STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
-_CHUNK: list[ChunkHandler] = [MarkdownHandler()]
+from context_kernel.ingester.terraform_handler import TerraformHandler
+from context_kernel.ingester.yaml_handler import YAMLHandler
+from context_kernel.ingester.bicep_handler import BicepHandler
+from context_kernel.ingester.html_handler import HTMLHandler
+from context_kernel.ingester.graphql_handler import GraphQLHandler
+from context_kernel.ingester.rust_handler import RustHandler
+from context_kernel.ingester.text_handler import TextHandler
+from context_kernel.ingester.pdf_handler import PDFHandler
+
+_STRUCTURED: list[StructuredHandler] = [
+    PythonHandler(),
+    TypeScriptHandler(),
+    TerraformHandler(),
+    YAMLHandler(),
+    BicepHandler(),
+    HTMLHandler(),
+    GraphQLHandler(),
+    RustHandler(),
+]
+_CHUNK: list[ChunkHandler] = [MarkdownHandler(), TextHandler(), PDFHandler()]
 
 # Entities embedded per /embeddings round-trip in Phase 3.
 _EMBED_BATCH = 96
@@ -123,6 +142,86 @@ class _FileResult:
     scope_key: str = ""
 
 
+class _SnapshotStore:
+    """In-memory sink used to build per-project snapshots before one portfolio upsert."""
+
+    def __init__(self) -> None:
+        self.commit: GraphCommit | None = None
+        self.entities: list[Entity] = []
+        self.relationships: list[Relationship] = []
+        self.summaries: list[Summary] = []
+        self.chunks: list[EmbeddedChunk] = []
+        self.scope_entities: dict[ScopePath, list[Entity]] = {}
+
+    def graph_commit(self) -> GraphCommit:
+        return self.commit or GraphCommit("initial")
+
+    def get_entity(self, entity_id: str) -> Entity | None:
+        return None
+
+    def get_neighbors(self, entity_id: str):
+        return []
+
+    def get_summary(self, scope: ScopePath) -> Summary | None:
+        return None
+
+    def get_embedding(self, digest: Sha256) -> bytes | None:
+        return None
+
+    def search_similar(self, query_embedding, k, scope=None):
+        return []
+
+    def list_summaries(self):
+        return list(self.summaries)
+
+    def list_entities_by_scope(self):
+        return dict(self.scope_entities)
+
+    def upsert(
+        self,
+        graph_commit,
+        entities,
+        relationships,
+        summaries,
+        chunks=None,
+        scope_entities=None,
+    ) -> None:
+        self.commit = graph_commit
+        self.entities = list(entities)
+        self.relationships = list(relationships)
+        self.summaries = list(summaries)
+        self.chunks = list(chunks or [])
+        self.scope_entities = dict(scope_entities or {})
+
+
+def _rewrite_path_mentions(
+    entities: list[RawEntity],
+    relationships: list[RawRelationship],
+    *,
+    file_path: Path,
+    rel_path: str,
+) -> tuple[list[RawEntity], list[RawRelationship]]:
+    """Keep handler prose portable even when handlers receive absolute paths."""
+    absolute = str(file_path)
+    if absolute == rel_path:
+        return entities, relationships
+    return (
+        [
+            RawEntity(e.name, e.kind, e.description.replace(absolute, rel_path))
+            for e in entities
+        ],
+        [
+            RawRelationship(
+                r.source_name,
+                r.target_name,
+                r.kind,
+                r.description.replace(absolute, rel_path),
+            )
+            for r in relationships
+        ],
+    )
+
+
 def _derive_entity_id(name: str, kind: str, source_file: str, project: str | None = None) -> str:
     if project:
         return hashlib.sha256(f"{project}:{name}:{kind}:{source_file}".encode()).hexdigest()
@@ -194,6 +293,104 @@ def _compute_graph_commit(all_files: list[Path], sources_root: Path) -> GraphCom
     return GraphCommit(h.hexdigest())
 
 
+def _include_ontology_file(files: list[Path], *, portfolio_root: Path, commit_root: Path) -> list[Path]:
+    ontology_path, _specs = load_ontology(portfolio_root)
+    if ontology_path is None:
+        return files
+    try:
+        ontology_path.relative_to(commit_root)
+    except ValueError:
+        return files
+    if ontology_path in files:
+        return files
+    return [*files, ontology_path]
+
+
+def _apply_concept_layer(
+    all_entities: list[Entity],
+    all_relationships: list[Relationship],
+    all_chunks: list[EmbeddedChunk],
+    scope_entities: dict[str, list[Entity]],
+    *,
+    portfolio_root: Path,
+    blob_root: Path,
+    config: "IngesterConfig",
+    embedder: "Embedder | None",
+) -> None:
+    """Ground curated entity-concepts into the production graph when an ontology exists."""
+    _ontology_path, specs = load_ontology(portfolio_root)
+    if not specs:
+        return
+
+    concept_entities, concept_relationships = ground_entity_concepts(all_entities, specs)
+    if not concept_entities:
+        return
+
+    existing_entity_ids = {e.id for e in all_entities}
+    scored_concepts: list[Entity] = []
+    for c in concept_entities:
+        if c.id in existing_entity_ids:
+            continue
+        tier = scoring.authority(c.sources, config.scoring)
+        scored = Entity(
+            id=c.id,
+            name=c.name,
+            kind=c.kind,
+            description=c.description,
+            aliases=c.aliases,
+            sources=c.sources,
+            kinds=c.kinds,
+            source_tier=tier,
+            centrality=0.0,
+            confidence=scoring.confidence(tier, 0.0),
+        )
+        scored_concepts.append(scored)
+        existing_entity_ids.add(c.id)
+
+    if not scored_concepts:
+        return
+
+    all_entities.extend(scored_concepts)
+    scope_entities.setdefault(".", []).extend(scored_concepts)
+
+    existing_rel_keys = {(r.source_id, r.target_id, r.kind) for r in all_relationships}
+    for rel in concept_relationships:
+        key = (rel.source_id, rel.target_id, rel.kind)
+        if key in existing_rel_keys:
+            continue
+        existing_rel_keys.add(key)
+        weight = scoring.edge_weight(rel.kind, config.scoring)
+        all_relationships.append(Relationship(
+            source_id=rel.source_id,
+            target_id=rel.target_id,
+            kind=rel.kind,
+            description=rel.description,
+            weight=weight,
+            drift=0.0,
+        ))
+
+    if embedder is None:
+        return
+
+    try:
+        embeddings = _embed_many(embedder, [e.description for e in scored_concepts], mode="passage")
+    except Exception:
+        log.warning("Failed to embed concept entities, skipping concept chunks", exc_info=True)
+        return
+
+    for concept, emb in zip(scored_concepts, embeddings):
+        write_embedding(blob_root, emb)
+        src = concept.sources[0] if concept.sources else "ontology.toml"
+        all_chunks.append(EmbeddedChunk(
+            id=concept.id,
+            embedding=emb,
+            chunk_text=concept.description,
+            source_path=src,
+            kind="entity",
+            scope=ScopePath(Path(".")),
+        ))
+
+
 def ingest(
     store: KnowledgeStore,
     sources_root: Path,
@@ -204,6 +401,7 @@ def ingest(
     summarizer: Summarizer | None = None,
     embedder: "Embedder | None" = None,
     metrics: "LLMMetrics | None" = None,
+    apply_concepts: bool = True,
 ) -> GraphCommit:
     """Detect changed sources, extract entities, upsert into Graph. Return the new GraphCommit."""
     t0 = time.monotonic()
@@ -245,6 +443,7 @@ def ingest(
     t_phase1 = time.monotonic()
     for file_path, rel_path, handler in structured_files:
         re_, rr_ = handler.extract(file_path)
+        re_, rr_ = _rewrite_path_mentions(re_, rr_, file_path=file_path, rel_path=rel_path)
         raw_entities += [ExtractedEntity(e.name, e.kind, rel_path, e.description) for e in re_]
         raw_relationships += [ExtractedRelationship(r.source_name, r.target_name, r.kind, rel_path, r.description) for r in rr_]
     phase1_ms = int((time.monotonic() - t_phase1) * 1000)
@@ -464,7 +663,24 @@ def ingest(
                     log.warning("Failed to process scope %s, skipping", sk, exc_info=True)
     phase4_ms = int((time.monotonic() - t_phase4) * 1000)
 
-    commit = _compute_graph_commit(all_files, sources_root)
+    if apply_concepts:
+        _apply_concept_layer(
+            all_entities,
+            all_relationships,
+            all_chunks,
+            scope_entities,
+            portfolio_root=blob_root,
+            blob_root=blob_root,
+            config=config,
+            embedder=embedder,
+        )
+
+    commit_files = (
+        _include_ontology_file(all_files, portfolio_root=blob_root, commit_root=sources_root)
+        if apply_concepts
+        else all_files
+    )
+    commit = _compute_graph_commit(commit_files, sources_root)
     typed_scope_entities = {ScopePath(Path(k)): v for k, v in scope_entities.items()}
     store.upsert(
         commit, all_entities, all_relationships, all_summaries,
@@ -505,4 +721,100 @@ def ingest(
         })
     log.info("ingested", extra=extra)
 
+    return commit
+
+
+def ingest_portfolio(
+    store: KnowledgeStore,
+    portfolio_root: Path,
+    blob_root: Path,
+    config: "IngesterConfig",
+    projects: list[tuple[Path, str | None]],
+    *,
+    summarizer: Summarizer | None = None,
+    embedder: "Embedder | None" = None,
+    metrics: "LLMMetrics | None" = None,
+) -> GraphCommit:
+    """Ingest all configured projects and upsert one portfolio-wide graph snapshot.
+
+    `ingest()` is still the single-project primitive. This wrapper prevents two bad
+    states in multi-project portfolios: a final graph_commit that only describes the
+    last project, and stale entities from projects/scopes that were removed.
+    """
+    t0 = time.monotonic()
+    portfolio_root = portfolio_root.resolve()
+    blob_root = blob_root.resolve()
+
+    all_entities: list[Entity] = []
+    all_relationships: list[Relationship] = []
+    all_summaries: list[Summary] = []
+    all_chunks: list[EmbeddedChunk] = []
+    all_scope_entities: dict[ScopePath, list[Entity]] = {}
+    all_files: list[Path] = []
+
+    for project_path, project_name in projects:
+        project_root = (portfolio_root / project_path).resolve()
+        all_files.extend(walk_source_files(project_root))
+
+        snapshot = _SnapshotStore()
+        ingest(
+            snapshot,
+            project_root,
+            blob_root,
+            config,
+            project_name=project_name,
+            summarizer=summarizer,
+            embedder=embedder,
+            metrics=metrics,
+            apply_concepts=False,
+        )
+
+        all_entities.extend(snapshot.entities)
+        all_relationships.extend(snapshot.relationships)
+        all_summaries.extend(snapshot.summaries)
+        all_chunks.extend(snapshot.chunks)
+        all_scope_entities.update(snapshot.scope_entities)
+
+    concept_scope_entities = {str(k): list(v) for k, v in all_scope_entities.items()}
+    _apply_concept_layer(
+        all_entities,
+        all_relationships,
+        all_chunks,
+        concept_scope_entities,
+        portfolio_root=portfolio_root,
+        blob_root=blob_root,
+        config=config,
+        embedder=embedder,
+    )
+    # `_apply_concept_layer` mutates a string-keyed scope map; fold those additions
+    # back into the typed map for the final store write.
+    all_scope_entities = {ScopePath(Path(k)): v for k, v in concept_scope_entities.items()}
+
+    commit_files = _include_ontology_file(all_files, portfolio_root=portfolio_root, commit_root=portfolio_root)
+    commit = (
+        _compute_graph_commit(commit_files, portfolio_root)
+        if commit_files
+        else GraphCommit(hashlib.sha256(b"empty").hexdigest())
+    )
+    store.upsert(
+        commit,
+        all_entities,
+        all_relationships,
+        all_summaries,
+        all_chunks or None,
+        all_scope_entities or None,
+    )
+
+    elapsed = int((time.monotonic() - t0) * 1000)
+    log.info(
+        "portfolio_ingested",
+        extra={
+            "projects": len(projects),
+            "files_processed": len(all_files),
+            "entities": len(all_entities),
+            "relationships": len(all_relationships),
+            "graph_commit": str(commit),
+            "duration_ms": elapsed,
+        },
+    )
     return commit

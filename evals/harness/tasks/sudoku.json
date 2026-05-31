@@ -1,0 +1,61 @@
+{
+  "repo": "vibe-coded/sudoku",
+  "portfolio": "test-repos/vibe-coded/sudoku",
+  "note": "Gold = files that genuinely answer each question, verified by hand against the tree 2026-05-30. Vibe-coded (Claude Code) multi-module sudoku monorepo. The backend (api/) is Python (Starlette + Ariadne GraphQL on AWS Lambda via Mangum), data layer DynamoDB (boto3), auth AWS Cognito (JWT/OIDC). Mobile lives at mobile/. web/ is a React + Apollo + Mantine SPA. terraform/ provisions Lambda/API Gateway/DynamoDB/Cognito/S3/CloudFront. NOTE: ingester has no Terraform/GraphQL-SDL handler and .tsx coverage depends on the TS handler; partial-graph effects are a real finding.",
+  "tasks": [
+    {
+      "id": "q1-api-auth",
+      "question": "How does the API authenticate incoming requests? Trace where the bearer token is read off the request, where the Cognito JWT is verified, and how user identity / admin status is exposed to GraphQL resolvers. Name the exact source files and key functions.",
+      "gold": [
+        "api/graphql/context.py",
+        "api/utils/auth.py"
+      ]
+    },
+    {
+      "id": "q2-puzzle-gen-solve",
+      "question": "Where is a new sudoku puzzle generated and where is a solution/cell correctness validated? Name the exact source files and key functions (generation, backtracking solver, uniqueness check) and explain the algorithm at a high level.",
+      "gold": [
+        "api/utils/sudoku.py",
+        "api/graphql/resolvers/sudoku_games.py"
+      ]
+    },
+    {
+      "id": "q3-data-model-db",
+      "question": "What is the API's data model and persistence layer? Which database is used, what entities/tables exist, and where are the create/get/update/delete operations and serialization defined?",
+      "gold": [
+        "api/data/sudoku_games.py",
+        "api/data/users.py",
+        "api/data/ws_connections.py",
+        "terraform/dynamodb.tf"
+      ]
+    },
+    {
+      "id": "q4-web-game-state",
+      "question": "How does the React web frontend manage and render game state (current game, board, selected number, notes mode)? Where does it fetch the game and where is per-cell interaction state held?",
+      "gold": [
+        "web/src/pages/DashboardPage.tsx",
+        "web/src/components/SudokuBoard.tsx",
+        "web/src/graphql/client.ts"
+      ]
+    },
+    {
+      "id": "q5-server-entrypoint-routing",
+      "question": "Where is the server/API wired up: the ASGI app entrypoint, route definitions, the Lambda handlers, and how the GraphQL schema is assembled from resolvers? Name the exact source files.",
+      "gold": [
+        "api/app.py",
+        "api/lambda.py",
+        "api/graphql/schema.py"
+      ]
+    },
+    {
+      "id": "q6-infra-deploy",
+      "question": "What does Terraform provision and how is the app deployed? Identify the compute for the API, the frontend hosting/CDN, and the CI pipeline that builds and ships both api and web.",
+      "gold": [
+        "terraform/lambda.tf",
+        "terraform/cloudfront.tf",
+        "terraform/s3.tf",
+        ".github/workflows/deploy.yml"
+      ]
+    }
+  ]
+}

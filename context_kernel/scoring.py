@@ -23,6 +23,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from context_kernel.source_kinds import IAC_EXT, is_code_path, is_ops_path
+
 # ── Default tables (ADR-0015) ───────────────────────────────────────────────
 # Tier name → authority weight. Source paths are classified to a tier by `classify_source`.
 AUTHORITY_TIERS: dict[str, float] = {
@@ -33,7 +35,10 @@ AUTHORITY_TIERS: dict[str, float] = {
     "OVERVIEW": 0.85,     # repo trunk / top-level orientation doc — capped AT code (ADR-0022)
     "CONTEXT": 0.8,       # canonical vocabulary
     "REFERENCE": 0.8,     # authored understanding
-    "OPS": 0.6,           # operational reference (deploy / run / configure) — ADR-0022
+    "OPS": 0.6,           # operational reference (deploy / run / configure) — ADR-0022.
+                          # Also carries Infrastructure-as-Code (.tf/.hcl/.bicep/.tf.json/.tfvars):
+                          # parsed structurally (authoritative for what IS) but terse/boilerplate,
+                          # so it sits between code and prose docs rather than in the prose catch-all.
     "SPEC": 0.5,          # weeks shelf-life
     "EPHEMERAL": 0.2,     # disposable context
 }
@@ -46,6 +51,7 @@ EDGE_WEIGHTS: dict[str, float] = {
     "implements": 0.9,    # structural (parser)
     "inherits": 0.9,      # structural (parser)
     "realizes": 0.9,      # semantic
+    "implemented-by": 0.9,  # concept hub → code grounding (deterministic ontology alias)
     "supersedes": 0.85,   # semantic
     "addresses": 0.7,     # semantic
     "motivates": 0.5,     # semantic
@@ -56,7 +62,7 @@ EDGE_WEIGHT_DEFAULT = 0.5  # unknown kind — mid
 # Dependency-bearing kinds that count toward centrality (ADR-0015 Axis 3 / ADR-0021).
 # Structural `implements`/`inherits` + semantic `realizes`/`governed-by`. `imports`
 # (pure noise) and the weak/historical kinds are excluded.
-CENTRALITY_KINDS = frozenset({"implements", "inherits", "realizes", "governed-by"})
+CENTRALITY_KINDS = frozenset({"implements", "inherits", "realizes", "governed-by", "implemented-by"})
 
 DRIFT_HOPS = 1            # propagation hops for drift (ADR-0020 — one hop, no cascade)
 PROXIMITY_HOPS = 1        # propagation hops for find proximity (ADR-0015 Axis 4)
@@ -231,9 +237,18 @@ def classify_source(path: str, cfg: ScoringConfig = DEFAULTS) -> str:
         return "ARCHITECTURE"
     if "docs/adr/" in p or "/adr/" in p or _ADR_NAME.match(base):
         return "ADR"
-    if p.endswith((".py", ".ts", ".tsx", ".js")):
+    if is_code_path(p):
         return "CODE"
+    # Infrastructure-as-Code / structured config: parsed structurally but terse,
+    # and it IS the deploy/run/configure signal — so it earns the OPS middle tier
+    # (0.6, ADR-0022), not the prose catch-all. Matched by suffix before the prose
+    # heuristics below. Checked after CODE so a `.py` etc. still wins; checked
+    # before the prose tiers so a `.tf` is never demoted to the default.
+    if is_ops_path(p):
+        return "OPS"
     if base == "context.md":
+        return "CONTEXT"
+    if base == "ontology.toml":
         return "CONTEXT"
     if "reference" in base or "reference/" in p:
         return "REFERENCE"

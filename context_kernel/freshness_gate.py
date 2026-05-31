@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,7 +28,7 @@ def _scope_from_path(path: Path, tree_root: Path) -> Path:
 def check(path: Path, store: KnowledgeStore, tree_root: Path, config: "Config | None" = None) -> bytes:
     """Compare path's freshness header against current state; regenerate if stale; return fresh bytes."""
     from context_kernel.materializer import materialize
-    from context_kernel.ingester import ingest
+    from context_kernel.ingester import ingest, ingest_portfolio
     from context_kernel.config_store import IngesterConfig, MaterializerConfig
     from context_kernel.types import ScopePath
 
@@ -57,8 +58,44 @@ def check(path: Path, store: KnowledgeStore, tree_root: Path, config: "Config | 
 
     try:
         if source_tree_is_stale:
-            ingest_config = config.ingester if config else IngesterConfig()
-            ingest(store, scope_dir, tree_root / ".context-kernel", ingest_config)
+            if config:
+                from context_kernel.ingester.embedder import HttpEmbedder
+                from context_kernel.ingester.summarizer import LLMSummarizer
+                from context_kernel.types import LLMMetrics
+
+                metrics = LLMMetrics()
+                summarizer_key = os.environ.get(config.ingester.summarizer_api_key_env) or os.environ.get("CK_API_KEY")
+                embedder_key = os.environ.get(config.ingester.embedder_api_key_env) or os.environ.get("CK_API_KEY")
+                summarizer = LLMSummarizer(
+                    endpoint=config.ingester.summarizer_endpoint,
+                    model=config.ingester.summarizer_model,
+                    cache_dir=tree_root / ".context-kernel" / "cache",
+                    api_key=summarizer_key,
+                    metrics=metrics,
+                )
+                embedder = HttpEmbedder(
+                    endpoint=config.ingester.embedder_endpoint,
+                    model=config.ingester.embedder_model,
+                    dim=config.ingester.embedder_dim,
+                    api_key=embedder_key,
+                    metrics=metrics,
+                )
+                projects = [
+                    (project.path, None if project.path == Path(".") else project.name)
+                    for project in config.projects
+                ]
+                ingest_portfolio(
+                    store,
+                    tree_root,
+                    tree_root,
+                    config.ingester,
+                    projects,
+                    summarizer=summarizer,
+                    embedder=embedder,
+                    metrics=metrics,
+                )
+            else:
+                ingest(store, tree_root, tree_root, IngesterConfig())
 
         mat_config = config.materializer if config else MaterializerConfig()
         materialize(scope, store, tree_root, mat_config)
