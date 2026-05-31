@@ -34,6 +34,16 @@ class TestLoadDefaults:
         assert config.ingester.summary_target_tokens == 300
         assert config.ingester.embedder_model == "qwen3-embedding-0.6b"
 
+    def test_exclude_dirs_parsed_as_tuple(self, tmp_path):
+        # TOML arrays parse to lists; the frozen dataclass needs a hashable tuple.
+        toml = tmp_path / "config.toml"
+        toml.write_text('[ingester]\nexclude_dirs = ["test-repos", "vendor"]\n')
+        config = load(toml)
+        assert config.ingester.exclude_dirs == ("test-repos", "vendor")
+
+    def test_exclude_dirs_default_empty(self):
+        assert load(None).ingester.exclude_dirs == ()
+
     def test_portfolio_root_defaults_to_cwd(self):
         config = load(None)
         assert config.portfolio_root == Path(".").resolve()

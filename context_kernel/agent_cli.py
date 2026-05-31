@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from context_kernel.change_detection import register_excluded_dirs
 from context_kernel.config_store import load as load_config
 from context_kernel.logging import configure as configure_logging, invocation_id as _invocation_var
 from context_kernel.operational_journal import JournalEntry, append
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         if auto.exists():
             config_path = auto
     config = load_config(config_path)
+    register_excluded_dirs(config.ingester.exclude_dirs)
 
     configure_logging()
     inv_id = uuid4()

@@ -14,25 +14,41 @@ from pathlib import Path
 
 from context_kernel.types import GraphCommit, Sha256, ScopePath
 
-_EXCLUDED_DIRS = frozenset({".git", ".context-kernel", "node_modules", "__pycache__"})
+# Build artifacts / vendored trees that are never source knowledge. Dotdirs (.git, .venv,
+# .next, .svelte-kit, ...) are excluded unconditionally by the `startswith(".")` rule below,
+# so only the non-dot build dirs need naming here.
+_EXCLUDED_DIRS = frozenset({
+    ".git", ".context-kernel", "node_modules", "__pycache__",
+    "dist", "build", "out", "coverage",
+})
 _MATERIALIZED_FILES = frozenset({"AGENTS.md", "CLAUDE.md"})
 
-# Extra directory names to exclude, set per-invocation via the environment.
-# Comma-separated, e.g. CK_EXTRA_EXCLUDED_DIRS="data,assets,deploy". Dotdirs
-# (.git, .venv, .context-kernel, ...) are already excluded unconditionally.
-_EXTRA_EXCLUDED_DIRS = frozenset(
-    name.strip()
-    for name in os.environ.get("CK_EXTRA_EXCLUDED_DIRS", "").split(",")
-    if name.strip()
-)
+# Extra directory names to exclude, contributed two ways and read LIVE (not frozen at import,
+# so a config-driven set registered after import is honored consistently by every walker call —
+# ingest, freshness hash, scope discovery):
+#   1. env CK_EXTRA_EXCLUDED_DIRS="data,assets,deploy" (comma-separated)
+#   2. register_excluded_dirs(...) — called from the CLI with [ingester].exclude_dirs config
+#      (e.g. "test-repos", the foreign eval corpora that live under a project root).
+_REGISTERED_EXCLUDED_DIRS: set[str] = set()
+
+
+def register_excluded_dirs(names: "list[str] | tuple[str, ...]") -> None:
+    """Add directory names to exclude for the rest of this process (config-driven)."""
+    _REGISTERED_EXCLUDED_DIRS.update(n.strip() for n in names if n and n.strip())
+
+
+def _extra_excluded_dirs() -> set[str]:
+    env = {n.strip() for n in os.environ.get("CK_EXTRA_EXCLUDED_DIRS", "").split(",") if n.strip()}
+    return env | _REGISTERED_EXCLUDED_DIRS
 
 
 def _is_excluded(path: Path) -> bool:
     if path.name in _MATERIALIZED_FILES:
         return True
+    extra = _extra_excluded_dirs()
     return any(
         part in _EXCLUDED_DIRS
-        or part in _EXTRA_EXCLUDED_DIRS
+        or part in extra
         or (part.startswith(".") and part not in {"."})
         for part in path.parts
     )

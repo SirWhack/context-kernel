@@ -733,6 +733,34 @@ class TestChangeDetection:
         files = walk_source_files(tmp_path)
         assert len(files) == 1
 
+    def test_walk_excludes_build_artifacts(self, tmp_path):
+        # dist/build/out/coverage are universally build output, never source knowledge.
+        for d in ("dist", "build", "out", "coverage"):
+            art = tmp_path / d
+            art.mkdir()
+            (art / "bundle.js").write_text("minified")
+        (tmp_path / "app.py").write_text("real source")
+        files = walk_source_files(tmp_path)
+        assert [f.name for f in files] == ["app.py"]
+
+    def test_walk_honors_registered_exclusions(self, tmp_path):
+        # Config-driven exclusions (e.g. [ingester].exclude_dirs = ["test-repos"]) are
+        # registered after import and must still be honored by the live walker.
+        from context_kernel.change_detection import (
+            register_excluded_dirs,
+            _REGISTERED_EXCLUDED_DIRS,
+        )
+        repos = tmp_path / "test-repos" / "open-webui"
+        repos.mkdir(parents=True)
+        (repos / "main.py").write_text("foreign corpus")
+        (tmp_path / "app.py").write_text("real source")
+        try:
+            register_excluded_dirs(["test-repos"])
+            files = walk_source_files(tmp_path)
+            assert [f.name for f in files] == ["app.py"]
+        finally:
+            _REGISTERED_EXCLUDED_DIRS.discard("test-repos")
+
     def test_discover_scopes(self, tmp_path):
         src = tmp_path / "src"
         src.mkdir()

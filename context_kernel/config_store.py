@@ -35,6 +35,7 @@ class IngesterConfig:
     embedder_api_key_env: str = "CF_WORKER_AI_TOKEN"
     contextual_extraction: bool = True   # ADR-0016: feed code entities + vocab into doc extraction
     code_context_tokens: int = 2000      # token budget for the known-code-entities prefix
+    exclude_dirs: tuple[str, ...] = ()   # extra dir names to skip when walking (e.g. "test-repos")
     scoring: ScoringConfig = field(default_factory=ScoringConfig)  # ADR-0015 resolved knobs
 
 
@@ -117,6 +118,9 @@ def load(config_path: Path | None = None) -> Config:
     for key in ("summarizer_endpoint", "embedder_endpoint", "summarizer_model", "embedder_model"):
         if key in ingester_kwargs:
             ingester_kwargs[key] = os.path.expandvars(ingester_kwargs[key])
+    # TOML arrays parse to lists; the frozen dataclass wants a hashable tuple.
+    if "exclude_dirs" in ingester_kwargs:
+        ingester_kwargs["exclude_dirs"] = tuple(ingester_kwargs["exclude_dirs"])
 
     # ADR-0015 precedence: default → [ingester.scoring] config → CK_SCORING_* env (highest).
     scoring = ScoringConfig.resolve(ingester_raw.get("scoring", {}), os.environ)
