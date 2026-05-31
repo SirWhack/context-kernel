@@ -98,3 +98,15 @@ model-time eval, not guessed.
   docs describe code — a corpus property, surfaced now at query time as well as ingest.
 - **No new write-time state.** Expansion reads `get_neighbors` + stored `edge_weight`/`confidence`
   at query time; nothing is materialized, consistent with ADR-0019's read/write split.
+
+## Validation status (2026-05-30): UNVALIDATED — default-on is provisional
+
+A deterministic A/B (`scripts/expansion_ab.py`, 10 model-time "why" questions) found **no
+measurable retrieval gain** (helped 0 / hurt 0 / unchanged 10): expansion never moved the rank
+of the best answer, only appended the complementary-altitude node (the code for a doc-query)
+lower down. The cause is corpus, not mechanism — model-time (like every repo tested so far) is
+**human-authored and doc-rich**, so direct embedding search already surfaces the governing ADR
+and there is nothing one-hop-away-and-invisible to rescue. The kernel targets **agentic /
+vibecoded** repos where the doc layer is thin; expansion's value must be measured *there*. Until
+then, do not cite this eval as evidence the feature helps — only that it does **no harm** on a
+doc-rich repo. See `evals/runs/2026-05-30-expansion-and-corpus-reframe.md`.
