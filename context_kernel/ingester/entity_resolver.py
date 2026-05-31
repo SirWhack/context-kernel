@@ -227,8 +227,12 @@ def resolve(
         # Resolve to the imported SYMBOL (last segment), then the MODULE (penultimate),
         # honoring the same "never guess an ambiguous base" rule. External libs stay unresolved.
         if "." in name:
+            # A relative-import target can be all dots ("." for `from . import x`, ".." for a
+            # parent package), leaving no non-empty segment — guard before indexing or the
+            # whole ingest crashes with IndexError (and, with rm-state-first, wipes the graph).
             segs = [s for s in name.split(".") if s]
-            for seg in ([segs[-1]] + ([segs[-2]] if len(segs) >= 2 else [])):
+            cand = ([segs[-1]] + ([segs[-2]] if len(segs) >= 2 else [])) if segs else []
+            for seg in cand:
                 nb = normalize(seg)
                 if nb and nb not in ambiguous_bases:
                     hit = name_index.get(nb) or name_index.get(seg)

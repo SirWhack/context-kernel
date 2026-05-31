@@ -8,6 +8,7 @@ the current backend handles all v1 protocol methods with minimal dependencies.
 
 import json
 import math
+import os
 import struct
 from pathlib import Path
 
@@ -137,7 +138,14 @@ class LightRAGStore(KnowledgeStore):
                 for c in self._chunks
             ],
         }
-        self._state_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        # Atomic write: serialize fully, write to a sibling temp, then os.replace (atomic on
+        # POSIX). A crash mid-write can never truncate or corrupt the prior state.json — the
+        # old graph survives until the new one is complete. json.dumps runs before any write,
+        # so a serialization error also leaves the prior file intact.
+        payload = json.dumps(raw, indent=2)
+        tmp = self._state_path.with_name(self._state_path.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.replace(tmp, self._state_path)
 
         for chunk in self._chunks:
             if chunk.embedding:

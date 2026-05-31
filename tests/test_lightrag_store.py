@@ -118,6 +118,29 @@ class TestPersistence:
         store2 = LightRAGStore(graph_dir)
         assert len(store2.get_neighbors("e1")) == 1
 
+    def test_failed_save_leaves_prior_graph_intact(self, tmp_path, monkeypatch):
+        """Atomic write: if the save is interrupted, the prior state.json must survive whole —
+        a crash mid-ingest can never wipe the graph (the incident that prompted this)."""
+        import json
+        from context_kernel.graph import lightrag_adapter
+        graph_dir = tmp_path / "graph"
+        store = LightRAGStore(graph_dir)
+        store.upsert(GraphCommit("c1"), [_entity("e1", "A")], [], [])  # graph A persisted
+        state_path = graph_dir / "state.json"
+        assert json.loads(state_path.read_text())["commit"] == "c1"
+
+        # Simulate a crash during the atomic rename of the next save.
+        monkeypatch.setattr(lightrag_adapter.os, "replace",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+        with pytest.raises(OSError):
+            store.upsert(GraphCommit("c2"), [_entity("e2", "B")], [], [])
+
+        # Prior graph survives whole (the temp file is harmless — overwritten next save).
+        assert json.loads(state_path.read_text())["commit"] == "c1"
+        reloaded = LightRAGStore(graph_dir)
+        assert reloaded.graph_commit() == GraphCommit("c1")
+        assert reloaded.get_entity("e1") is not None
+
 
 class TestScoringFieldsPersistence:
     """Slice 1 (ADR-0015/0020): scoring axes round-trip; legacy state loads neutral."""

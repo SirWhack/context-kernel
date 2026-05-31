@@ -132,6 +132,15 @@ class TestDottedImportResolution:
         _, edges, _ = resolve(ents, rels)
         assert edges == []
 
+    def test_relative_import_all_dots_does_not_crash(self):
+        # `from . import x` / `from .. import y` emit an all-dots target with no non-empty
+        # segment; indexing segs[-1] unguarded raised IndexError and crashed the whole ingest
+        # (and, with rm-state-first, wiped the graph). Must drop the edge, not raise.
+        ents = [E("factory", "module", "vec/factory.py")]
+        for dots in (".", "..", "..."):
+            _, edges, _ = resolve(ents, [R("factory", dots)])
+            assert edges == []
+
     def test_ambiguous_symbol_not_guessed(self):
         # 'Client' defined in two files → ambiguous base → a dotted import to it must NOT guess
         ents = [E("factory", "module", "vec/factory.py"),
