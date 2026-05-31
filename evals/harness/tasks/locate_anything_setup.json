@@ -1,0 +1,59 @@
+{
+  "repo": "vibe-coded/locate_anything_setup",
+  "portfolio": "test-repos/vibe-coded/locate_anything_setup",
+  "note": "Gold = files that genuinely answer each question, verified by hand against the tree 2026-05-30. Vibe-coded (Claude Code) repo: a Rust (axum/tokio) HTTP+WebSocket frontend plus a Python asyncio inference sidecar for NVIDIA's LocateAnything-3B object-localization vision model (the 'location' domain = spatial object grounding / bounding boxes, primary use case drone detection). NOTE: the ingester has no Rust handler, so rust_server/src/*.rs is NOT in the graph; .rs gold therefore measures a real coverage gap for the kernel arm.",
+  "tasks": [
+    {
+      "id": "q1-localization-domain-model",
+      "question": "This server's core domain is spatial object localization: the model emits answers like <box><x1><y1><x2><y2></box> and <ref>label</ref> tags in a normalized [0,1000] coordinate space. Where is the raw model text parsed into structured detections and points, what are the core domain data types (bounding box / point), and how are normalized [0,1000] coords converted to source-image pixels? Name the exact files and key functions.",
+      "gold": [
+        "worker/parsing.py",
+        "worker/inference.py"
+      ]
+    },
+    {
+      "id": "q2-prompt-templates",
+      "question": "The model only accepts seven canonical trained prompt templates (closed-class detection, phrase grounding single/multi, text grounding, scene-text detection, GUI box, pointing). Where is the single source of truth for these templates, and where/how are client-submitted prompts strictly validated against them at the network edge? Name the exact files and how drift between the two is prevented.",
+      "gold": [
+        "worker/prompts.py",
+        "rust_server/src/prompt_validator.rs",
+        "worker/validate_startup.py"
+      ]
+    },
+    {
+      "id": "q3-pixel-token-geometry",
+      "question": "How does the app compute the pixel-to-token geometry for an input image — the ViT patch size, the 2x2 patch merger to LLM tokens, the 25,600-patch budget, the resize/pad plan, and the minimum resolvable object size? Name the source file(s) that implement this math and the function that produces the resize plan used per inference.",
+      "gold": [
+        "worker/pixel_token_math.py",
+        "worker/inference.py"
+      ]
+    },
+    {
+      "id": "q4-wire-protocol-routing",
+      "question": "Trace how an inference request flows from client to model: which HTTP/WebSocket routes exist, how the binary frame (length-prefixed JSON header + JPEG) is parsed and validated, and how the Rust frontend forwards each frame to the Python worker over the Unix domain socket. Name the exact source files and key functions/handlers.",
+      "gold": [
+        "rust_server/src/main.rs",
+        "rust_server/src/ws.rs",
+        "rust_server/src/ipc.rs",
+        "rust_server/src/protocol.rs"
+      ]
+    },
+    {
+      "id": "q5-worker-model-loading",
+      "question": "How is the LocateAnything-3B model actually loaded and run for inference on the Python side? Cover the asyncio Unix-socket worker entrypoint that serializes GPU access behind a lock, and the inference adapter that loads the model (attn-implementation override, SDPA mem-efficient patches, bf16) and runs .generate(). Name the exact files and key classes/functions.",
+      "gold": [
+        "worker/la_worker.py",
+        "worker/inference.py"
+      ]
+    },
+    {
+      "id": "q6-config-and-wiring",
+      "question": "Where do the runtime configuration knobs and pinned versions live, and how are they wired into the two processes at container start? Cover the single source of truth for pinned versions and input caps (LA_MAX_IMAGE_DIM, LA_MAX_JPEG_BYTES, ports), how the entrypoint launches the worker and frontend, and how the Rust binary parses its CLI/env args. Name the exact files.",
+      "gold": [
+        "scripts/lib/versions.sh",
+        "container/entrypoint.sh",
+        "rust_server/src/config.rs"
+      ]
+    }
+  ]
+}

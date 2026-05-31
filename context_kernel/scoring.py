@@ -33,11 +33,29 @@ AUTHORITY_TIERS: dict[str, float] = {
     "OVERVIEW": 0.85,     # repo trunk / top-level orientation doc — capped AT code (ADR-0022)
     "CONTEXT": 0.8,       # canonical vocabulary
     "REFERENCE": 0.8,     # authored understanding
-    "OPS": 0.6,           # operational reference (deploy / run / configure) — ADR-0022
+    "OPS": 0.6,           # operational reference (deploy / run / configure) — ADR-0022.
+                          # Also carries Infrastructure-as-Code (.tf/.hcl/.bicep/.tf.json/.tfvars):
+                          # parsed structurally (authoritative for what IS) but terse/boilerplate,
+                          # so it sits between code and prose docs rather than in the prose catch-all.
     "SPEC": 0.5,          # weeks shelf-life
     "EPHEMERAL": 0.2,     # disposable context
 }
 AUTHORITY_DEFAULT = 0.3   # unmatched prose — lean low (the HANDOFF lesson)
+
+# Infrastructure-as-Code / structured-config extensions mapped to the OPS tier.
+# These are parsed structurally (like code) but carry terser, more boilerplate
+# descriptions, AND they ARE the deploy/run/configure signal OPS names (ADR-0022),
+# so they earn the OPS middle tier rather than the prose catch-all. `.tf.json` is
+# listed first so it wins over a bare `.json` suffix; matching is by suffix in
+# `classify_source`. Tunable: extend this set (a module-level constant, reversible
+# by removing an entry) without touching the tier value.
+IAC_EXT = (
+    ".tf.json",
+    ".tf",
+    ".tfvars",
+    ".hcl",
+    ".bicep",
+)
 
 # Edge-kind → weight (ADR-0015 Axis 4 / ADR-0021 families). Serves both proximity
 # propagation and drift aggregation — one decision, reused.
@@ -233,6 +251,13 @@ def classify_source(path: str, cfg: ScoringConfig = DEFAULTS) -> str:
         return "ADR"
     if p.endswith((".py", ".ts", ".tsx", ".js")):
         return "CODE"
+    # Infrastructure-as-Code / structured config: parsed structurally but terse,
+    # and it IS the deploy/run/configure signal — so it earns the OPS middle tier
+    # (0.6, ADR-0022), not the prose catch-all. Matched by suffix before the prose
+    # heuristics below. Checked after CODE so a `.py` etc. still wins; checked
+    # before the prose tiers so a `.tf` is never demoted to the default.
+    if p.endswith(IAC_EXT):
+        return "OPS"
     if base == "context.md":
         return "CONTEXT"
     if "reference" in base or "reference/" in p:

@@ -40,8 +40,26 @@ __all__ = ["IngestionError", "ingest"]
 
 log = logging.getLogger(__name__)
 
-_STRUCTURED: list[StructuredHandler] = [PythonHandler(), TypeScriptHandler()]
-_CHUNK: list[ChunkHandler] = [MarkdownHandler()]
+from context_kernel.ingester.terraform_handler import TerraformHandler
+from context_kernel.ingester.yaml_handler import YAMLHandler
+from context_kernel.ingester.bicep_handler import BicepHandler
+from context_kernel.ingester.html_handler import HTMLHandler
+from context_kernel.ingester.graphql_handler import GraphQLHandler
+from context_kernel.ingester.rust_handler import RustHandler
+from context_kernel.ingester.text_handler import TextHandler
+from context_kernel.ingester.pdf_handler import PDFHandler
+
+_STRUCTURED: list[StructuredHandler] = [
+    PythonHandler(),
+    TypeScriptHandler(),
+    TerraformHandler(),
+    YAMLHandler(),
+    BicepHandler(),
+    HTMLHandler(),
+    GraphQLHandler(),
+    RustHandler(),
+]
+_CHUNK: list[ChunkHandler] = [MarkdownHandler(), TextHandler(), PDFHandler()]
 
 # Entities embedded per /embeddings round-trip in Phase 3.
 _EMBED_BATCH = 96

@@ -44,3 +44,4 @@ Thumbs.db
 
 # Local MCP launchers (machine-specific paths/secrets) — use scripts/mcp-server.sh.example
 scripts/mcp-*.sh
+.mcp.json
