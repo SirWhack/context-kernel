@@ -202,6 +202,58 @@ class TestRankByRelevance:
         assert [r.entity_id for r in ranked] == ["C", "P"]
 
 
+class TestNeighborExpansion:
+    """ADR-0023: find expands along edges, gated by edge_weight, capped, direct-hits win ties."""
+
+    def test_pulls_in_missed_neighbor(self):
+        # 'ADR' is connected to the strong seed via governed-by but was never retrieved.
+        seed = _result("S", score=0.8, confidence=1.0)
+        store = _RerankStore(neighbors={"S": [_neighbor("ADR", "governed-by")]})
+        ranked = rank_by_relevance([seed], store, ScoringConfig())
+        assert [r.entity_id for r in ranked] == ["S", "ADR"]  # neighbor now visible
+
+    def test_edge_weight_gates_expansion(self):
+        # Same seed, two neighbors: governed-by (0.95) clears the bar, imports (0.3) starves.
+        seed = _result("S", score=0.8, confidence=1.0)        # find_score 0.8, threshold 0.4
+        store = _RerankStore(neighbors={"S": [
+            _neighbor("ADR", "governed-by"),   # 0.8×0.95×0.6 = 0.456 ≥ 0.4  → admitted
+            _neighbor("DEP", "imports"),       # 0.8×0.30×0.6 = 0.144 < 0.4  → starved
+        ]})
+        ids = [r.entity_id for r in rank_by_relevance([seed], store, ScoringConfig())]
+        assert "ADR" in ids and "DEP" not in ids
+
+    def test_disabled_flag_is_noop(self):
+        seed = _result("S", score=0.8, confidence=1.0)
+        store = _RerankStore(neighbors={"S": [_neighbor("ADR", "governed-by")]})
+        cfg = ScoringConfig(expansion_enabled=False)
+        assert [r.entity_id for r in rank_by_relevance([seed], store, cfg)] == ["S"]
+
+    def test_cap_limits_admitted_neighbors(self):
+        seed = _result("S", score=0.9, confidence=1.0)
+        store = _RerankStore(neighbors={"S": [
+            _neighbor(f"N{i}", "governed-by") for i in range(10)
+        ]})
+        cfg = ScoringConfig(expansion_max=3)
+        ranked = rank_by_relevance([seed], store, cfg)
+        assert sum(1 for r in ranked if r.entity_id != "S") == 3
+
+    def test_direct_hit_wins_tie(self):
+        # T (direct) and the expanded neighbor land on the same score; direct must rank first.
+        seed = _result("S", score=0.5, confidence=1.0)   # 0.50
+        tee = _result("T", score=0.15, confidence=1.0)   # 0.15 (weakest direct → threshold 0.075)
+        store = _RerankStore(neighbors={"S": [_neighbor("E", "motivates")]})  # 0.5×0.5×0.6 = 0.15
+        ranked = rank_by_relevance([seed, tee], store, ScoringConfig())
+        ids = [r.entity_id for r in ranked]
+        assert ids.index("T") < ids.index("E")  # similarity-grounded beats inferred at a tie
+
+    def test_already_present_neighbor_not_duplicated(self):
+        seed = _result("S", score=0.8, confidence=1.0)
+        near = _result("N", score=0.4, confidence=1.0)
+        store = _RerankStore(neighbors={"S": [_neighbor("N", "realizes")]})
+        ranked = rank_by_relevance([seed, near], store, ScoringConfig())
+        assert [r.entity_id for r in ranked].count("N") == 1  # N is a direct hit, not re-added
+
+
 # ── Find (unit — no embedder) ─────────────────────────────────────────
 
 

@@ -5,6 +5,46 @@ headless Claude Code (sonnet) sessions over real third-party repos. The campaign
 value was **diagnostic**: it surfaced two production defects (fixed) and pinpointed the
 kernel's core unrealized capability — cross-altitude (doc↔code) linking.
 
+> ## ⚠️ CORRECTION (2026-05-30, later same day) — the headline below is WRONG
+>
+> The claim threaded through this doc — *"doc↔code linking is the core unrealized capability,
+> effectively not built (1 doc↔code edge in the whole graph)"* — **is false.** It was an
+> artifact of **two stacked measurement errors**, not a property of the kernel:
+>
+> 1. **I measured a *stale* model-time graph.** `~/Code/.context-kernel/graph` had been written
+>    by an older `ck` that did not persist `Entity.sources`. Every altitude check (`is_code` /
+>    `is_md` keys off `sources`) therefore returned 0 — the "0 cross-altitude edges in
+>    model-time" number was reading empty fields, not an empty graph. `verify_graph.py` reads
+>    `state.json` directly and inherited the same blindness.
+> 2. **The eval ran on open-webui**, whose docs (`SECURITY.md`, `CODE_OF_CONDUCT.md`, `README`)
+>    are governance prose that **never name a code symbol**. Name-merge (ADR-0017) *correctly*
+>    can't bridge prose to symbols when there's no shared name — open-webui's ~1 cross edge is
+>    real *for open-webui* and says nothing about the mechanism.
+>
+> **The truth, after a clean re-ingest of model-time on current code (entities=4,564, sources
+> on all of them, 0 dangling edges):** doc↔code linking *works well* on a corpus whose docs
+> name its code. Model-time has **434 cross-altitude semantic edges** (`realizes` 474 /
+> `governed-by` 278 / `motivates` 59 / `addresses` 22, counting code-reaching↔doc-reaching;
+> 361 strict pure-code↔pure-doc) plus **73 merged doc+code canonical nodes** — e.g.
+> `freshness_gate` unifies its `.py` with ARCHITECTURE/CONTEXT/README + ADR-0003 + ADR-0016;
+> `confidence` unifies `scoring.py` with ADR-0015/0019/0020. The name-merge + LLM-semantic-edge
+> machinery is the doc↔code linker, and it is **built and working**.
+>
+> **So the real unrealized capability is Problem 3, not Problem 2:** `find` still only *reranks*
+> the vector top-k (`rank_by_relevance`) and never **traverses** these edges, so all 434
+> cross-altitude links are invisible at query time. A question like "why is `freshness_gate`
+> built this way?" retrieves the node but never hops to ADR-0003. **Neighbor expansion in
+> `find` is the highest-value build; the embedding+LLM-confirm doc↔code linker prototyped below
+> is solving a problem that doesn't exist for doc-rich repos.**
+>
+> **Method lessons reinforced:** (a) never trust a graph-health number read from `state.json`
+> without confirming the format is current — re-ingest first; (b) the kernel's doc↔code value
+> is a *corpus property* (docs must name code) — eval it on model-time (or another doc-rich
+> repo), not on a repo with governance-only prose.
+>
+> The original text is preserved below as the record of *how* we were misled — that reasoning
+> trail is the actual lesson.
+
 ## Method
 
 - **Harness** (`evals/harness/run_eval.py`): two headless `claude -p --model sonnet` arms
@@ -124,11 +164,20 @@ shows parity: with no cross-altitude edges and no traversal, `find` is semantic 
 
 ## Open work (deferred)
 
-- Build the doc↔code linker with LLM confirmation, validated on model-time.
-- Add neighbor **expansion** to `find` (traversal, not just proximity rerank) to expose the
-  now-connected graph at query time.
-- Re-run these batteries as regression once the linker lands. Harness + scorer are reusable;
-  transcripts live (gitignored) under `evals/runs/sessions/`.
+- ~~Build the doc↔code linker with LLM confirmation~~ — **withdrawn** (see correction banner):
+  doc↔code linking already works on doc-rich corpora via name-merge + LLM semantic edges. The
+  cosine linker prototype solves a non-problem there.
+- ~~Add neighbor **expansion** to `find`~~ — **DONE** (ADR-0023). `find` now expands along edges
+  (relevance flows as `seed_score × edge_weight × hop_decay × neighbor_confidence`; no kind
+  allowlist — `edge_weight` gates). Live check: "why is `freshness_gate` built this way?" now
+  surfaces `freshness_gate.py` that the doc-heavy vector hits missed; a query whose direct hits
+  already nail the answer (graph-commit → ADR-0008) gets no expansion. Knobs: `CK_SCORING_EXPANSION*`.
+- **Re-run the batteries on model-time** (doc-rich) with `CK_SCORING_EXPANSION=off` vs `on` to
+  measure the traversal delta — the eval this whole campaign was set up to enable. Harness +
+  scorer reusable; transcripts gitignored under `evals/runs/sessions/`.
+- **Robustness defect still open:** a flaky embedder crashes ingest (`list index out of range`)
+  and, with the rm-state-first pattern, wipes the graph. Make the embed path degrade, not crash;
+  write `state.json` atomically so a crash never destroys the prior graph.
 
 ## Artifacts
 

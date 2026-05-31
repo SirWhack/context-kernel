@@ -62,6 +62,14 @@ DRIFT_HOPS = 1            # propagation hops for drift (ADR-0020 — one hop, no
 PROXIMITY_HOPS = 1        # propagation hops for find proximity (ADR-0015 Axis 4)
 CENTRALITY_IN_FIND = False  # whether centrality enters the find score (off — relevance ≠ centrality)
 
+# ADR-0023: query-time neighbor expansion. Relevance flows from a seed along an edge as
+# seed_score × edge_weight(kind) × hop_decay × neighbor_confidence. No kind allowlist — the
+# edge_weight table is the gate (imports@0.3 self-starves; governed-by@0.95 surfaces).
+EXPANSION_ENABLED = True
+EXPANSION_HOP_DECAY = 0.6   # per-hop attenuation (1 hop today; bounds expansion below its seed)
+EXPANSION_MAX = 5           # cap on neighbors admitted (guardrail, not policy)
+EXPANSION_MIN_RATIO = 0.5   # admit a neighbor only if its score ≥ ratio × weakest direct hit
+
 _ENV_PREFIX = "CK_SCORING_"
 
 
@@ -82,6 +90,10 @@ class ScoringConfig:
     drift_hops: int = DRIFT_HOPS
     proximity_hops: int = PROXIMITY_HOPS
     centrality_in_find: bool = CENTRALITY_IN_FIND
+    expansion_enabled: bool = EXPANSION_ENABLED
+    expansion_hop_decay: float = EXPANSION_HOP_DECAY
+    expansion_max: int = EXPANSION_MAX
+    expansion_min_ratio: float = EXPANSION_MIN_RATIO
 
     @classmethod
     def resolve(
@@ -121,6 +133,10 @@ class ScoringConfig:
         drift_hops = int(section.get("drift_hops", DRIFT_HOPS))
         proximity_hops = int(section.get("proximity_hops", PROXIMITY_HOPS))
         centrality_in_find = _as_bool(section.get("centrality_in_find", CENTRALITY_IN_FIND))
+        expansion_enabled = _as_bool(section.get("expansion", EXPANSION_ENABLED))
+        expansion_hop_decay = float(section.get("expansion_hop_decay", EXPANSION_HOP_DECAY))
+        expansion_max = int(section.get("expansion_max", EXPANSION_MAX))
+        expansion_min_ratio = float(section.get("expansion_min_ratio", EXPANSION_MIN_RATIO))
 
         for key, raw in env.items():
             if not key.startswith(_ENV_PREFIX):
@@ -141,6 +157,14 @@ class ScoringConfig:
                 proximity_hops = int(raw)
             elif rest == "CENTRALITY_IN_FIND":
                 centrality_in_find = _as_bool(raw)
+            elif rest == "EXPANSION":
+                expansion_enabled = _as_bool(raw)
+            elif rest == "EXPANSION_HOP_DECAY":
+                expansion_hop_decay = float(raw)
+            elif rest == "EXPANSION_MAX":
+                expansion_max = int(raw)
+            elif rest == "EXPANSION_MIN_RATIO":
+                expansion_min_ratio = float(raw)
 
         return cls(
             authority_tiers=tiers,
@@ -152,6 +176,10 @@ class ScoringConfig:
             drift_hops=drift_hops,
             proximity_hops=proximity_hops,
             centrality_in_find=centrality_in_find,
+            expansion_enabled=expansion_enabled,
+            expansion_hop_decay=expansion_hop_decay,
+            expansion_max=expansion_max,
+            expansion_min_ratio=expansion_min_ratio,
         )
 
 
@@ -344,6 +372,22 @@ def proximity(
 def find_score(similarity: float, confidence_: float, proximity_: float) -> float:
     """similarity × confidence × proximity (ADR-0015 find composite)."""
     return similarity * confidence_ * proximity_
+
+
+def expansion_score(
+    seed_score: float,
+    edge_kind: str,
+    neighbor_confidence: float,
+    cfg: ScoringConfig = DEFAULTS,
+) -> float:
+    """Relevance flowing from a seed to a 1-hop neighbor (ADR-0023, spreading activation).
+
+    `seed_score × edge_weight(kind) × hop_decay × neighbor_confidence`. Every factor is ≤ 1,
+    so an expanded candidate is always bounded below its seed's relevance — expansion augments
+    retrieval, never hijacks it. No kind allowlist: `edge_weight` is the gate (imports@0.3
+    self-starves; governed-by@0.95 surfaces).
+    """
+    return seed_score * edge_weight(edge_kind, cfg) * cfg.expansion_hop_decay * neighbor_confidence
 
 
 def ranking_weight(confidence_: float, centrality_: float) -> float:
