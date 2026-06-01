@@ -15,8 +15,12 @@ from context_kernel import scoring
 from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore, Relationship, Summary
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import walk_source_files
-from context_kernel.ingester.concepts import ground_entity_concepts, load_ontology
-from context_kernel.ontology import is_ontology_file
+from context_kernel.ingester.concepts import (
+    ConceptSpec,
+    concepts_from_ontology,
+    ground_entity_concepts,
+)
+from context_kernel.ontology import compose_ontology, find_ontology, is_ontology_file
 from context_kernel.ingester.entity_resolver import (
     CODE_EXT, ExtractedEntity, ExtractedRelationship, resolve as resolve_entities,
 )
@@ -178,6 +182,9 @@ class _SnapshotStore:
     def list_entities_by_scope(self):
         return dict(self.scope_entities)
 
+    def list_relationships(self):
+        return list(self.relationships)
+
     def upsert(
         self,
         graph_commit,
@@ -294,17 +301,22 @@ def _compute_graph_commit(all_files: list[Path], sources_root: Path) -> GraphCom
     return GraphCommit(h.hexdigest())
 
 
-def _include_ontology_file(files: list[Path], *, portfolio_root: Path, commit_root: Path) -> list[Path]:
-    ontology_path, _specs = load_ontology(portfolio_root)
-    if ontology_path is None:
-        return files
-    try:
-        ontology_path.relative_to(commit_root)
-    except ValueError:
-        return files
-    if ontology_path in files:
-        return files
-    return [*files, ontology_path]
+def _include_ontology_file(files: list[Path], *, roots: list[Path], commit_root: Path) -> list[Path]:
+    """Add any on-disk overlay `ontology.yaml` (portfolio + per-project) under `commit_root`
+    to the commit set, so an overlay edit gates freshness (ADR-0025 §5). The packaged base is
+    not a source file of the subject repo; a base change is a kernel-version change."""
+    out = list(files)
+    for root in roots:
+        path = find_ontology(root)
+        if path is None:
+            continue
+        try:
+            path.relative_to(commit_root)
+        except ValueError:
+            continue
+        if path not in out:
+            out.append(path)
+    return out
 
 
 def _apply_concept_layer(
@@ -313,13 +325,12 @@ def _apply_concept_layer(
     all_chunks: list[EmbeddedChunk],
     scope_entities: dict[str, list[Entity]],
     *,
-    portfolio_root: Path,
+    specs: list[ConceptSpec],
     blob_root: Path,
     config: "IngesterConfig",
     embedder: "Embedder | None",
 ) -> None:
-    """Ground curated entity-concepts into the production graph when an ontology exists."""
-    _ontology_path, specs = load_ontology(portfolio_root)
+    """Ground curated entity-concepts into the production graph (specs from the composed ontology)."""
     if not specs:
         return
 
@@ -381,7 +392,7 @@ def _apply_concept_layer(
 
     for concept, emb in zip(scored_concepts, embeddings):
         write_embedding(blob_root, emb)
-        src = concept.sources[0] if concept.sources else "ontology.toml"
+        src = concept.sources[0] if concept.sources else "ontology.yaml"
         all_chunks.append(EmbeddedChunk(
             id=concept.id,
             embedding=emb,
@@ -399,6 +410,7 @@ def ingest(
     config: "IngesterConfig",
     *,
     project_name: str | None = None,
+    portfolio_root: Path | None = None,
     summarizer: Summarizer | None = None,
     embedder: "Embedder | None" = None,
     metrics: "LLMMetrics | None" = None,
@@ -409,6 +421,14 @@ def ingest(
     sources_root = sources_root.resolve()
     blob_root = blob_root.resolve()
     n_parallel = config.parallel_requests
+
+    # Compose the effective ontology for THIS project (base ⊕ portfolio ⊕ project overlay) and
+    # point the summarizer at it BEFORE extraction (ADR-0025). The per-project ontology hash keys
+    # the summarizer cache, so an overlay edit re-extracts only this project (§5).
+    portfolio_root = (portfolio_root or sources_root).resolve()
+    composed = compose_ontology(portfolio_root, sources_root)
+    if summarizer is not None and hasattr(summarizer, "set_ontology"):
+        summarizer.set_ontology(composed)
 
     all_files = walk_source_files(sources_root)
     if not all_files:
@@ -674,14 +694,14 @@ def ingest(
             all_relationships,
             all_chunks,
             scope_entities,
-            portfolio_root=blob_root,
+            specs=concepts_from_ontology(composed, project=project_name),
             blob_root=blob_root,
             config=config,
             embedder=embedder,
         )
 
     commit_files = (
-        _include_ontology_file(all_files, portfolio_root=blob_root, commit_root=sources_root)
+        _include_ontology_file(all_files, roots=[portfolio_root, sources_root], commit_root=sources_root)
         if apply_concepts
         else all_files
     )
@@ -756,9 +776,15 @@ def ingest_portfolio(
     all_chunks: list[EmbeddedChunk] = []
     all_scope_entities: dict[ScopePath, list[Entity]] = {}
     all_files: list[Path] = []
+    project_roots: list[Path] = []
+    # node_id → spec: dedups portfolio concepts (one shared hub across repos) while keeping
+    # project concepts distinct (namespaced ids). Concepts come from each project's COMPOSED
+    # ontology, so portfolio-overlay concepts bridge repos and project concepts stay scoped.
+    concept_specs: dict[str, ConceptSpec] = {}
 
     for project_path, project_name in projects:
         project_root = (portfolio_root / project_path).resolve()
+        project_roots.append(project_root)
         all_files.extend(walk_source_files(project_root))
 
         snapshot = _SnapshotStore()
@@ -768,6 +794,7 @@ def ingest_portfolio(
             blob_root,
             config,
             project_name=project_name,
+            portfolio_root=portfolio_root,
             summarizer=summarizer,
             embedder=embedder,
             metrics=metrics,
@@ -780,13 +807,17 @@ def ingest_portfolio(
         all_chunks.extend(snapshot.chunks)
         all_scope_entities.update(snapshot.scope_entities)
 
+        composed = compose_ontology(portfolio_root, project_root)
+        for spec in concepts_from_ontology(composed, project=project_name):
+            concept_specs.setdefault(spec.node_id, spec)
+
     concept_scope_entities = {str(k): list(v) for k, v in all_scope_entities.items()}
     _apply_concept_layer(
         all_entities,
         all_relationships,
         all_chunks,
         concept_scope_entities,
-        portfolio_root=portfolio_root,
+        specs=list(concept_specs.values()),
         blob_root=blob_root,
         config=config,
         embedder=embedder,
@@ -795,7 +826,9 @@ def ingest_portfolio(
     # back into the typed map for the final store write.
     all_scope_entities = {ScopePath(Path(k)): v for k, v in concept_scope_entities.items()}
 
-    commit_files = _include_ontology_file(all_files, portfolio_root=portfolio_root, commit_root=portfolio_root)
+    commit_files = _include_ontology_file(
+        all_files, roots=[portfolio_root, *project_roots], commit_root=portfolio_root
+    )
     commit = (
         _compute_graph_commit(commit_files, portfolio_root)
         if commit_files

@@ -213,9 +213,19 @@ class LLMSummarizer:
         self._api_key = api_key
         self._metrics = metrics
         self._client = build_client(timeout=120.0)
-        # Vocabulary: derive the prompt + validation kinds from the ontology when present,
-        # else fall back to the hardcoded defaults (ADR-0024 §4). The ontology hash keys the
-        # cache, so a vocabulary edit forces re-extraction.
+        self.set_ontology(ontology)
+        if self._cache_dir is not None:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def set_ontology(self, ontology: "Ontology | None") -> None:
+        """Derive the prompt + validation kinds + cache hash from `ontology` (ADR-0024 §4).
+
+        Re-callable so a portfolio ingest can swap in each project's COMPOSED ontology
+        before that project's chunks (ADR-0025 §5): the per-project ontology hash keys the
+        cache, so an overlay edit re-extracts only that project. `None` → hardcoded defaults.
+        """
         if ontology is not None:
             self._system_prompt = build_system_prompt(
                 ontology.entity_bullets(), ontology.relationship_bullets()
@@ -228,10 +238,6 @@ class LLMSummarizer:
             self._entity_kinds = ENTITY_KINDS
             self._relationship_kinds = RELATIONSHIP_KINDS
             self._ontology_hash = ""
-        if self._cache_dir is not None:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_hits = 0
-        self._cache_misses = 0
 
     def _cache_path(self, key: str) -> Path | None:
         if self._cache_dir is None:

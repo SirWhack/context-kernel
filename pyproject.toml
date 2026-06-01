@@ -24,3 +24,6 @@ ck = "context_kernel.agent_cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["context_kernel*"]
+
+[tool.setuptools.package-data]
+context_kernel = ["ontology.base.yaml"]

@@ -232,6 +232,9 @@ class LightRAGStore(KnowledgeStore):
     def list_summaries(self) -> list[Summary]:
         return list(self._summaries.values())
 
+    def list_relationships(self) -> list[Relationship]:
+        return list(self._relationships)
+
     def list_entities_by_scope(self) -> dict[ScopePath, list[Entity]]:
         result: dict[ScopePath, list[Entity]] = {}
         for scope_key, entity_ids in self._scope_entities.items():

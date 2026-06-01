@@ -1,24 +1,19 @@
-# ontology.yaml — the Context Kernel type system (ADR-0024).
+# ontology.base.yaml — the Context Kernel's SHIPPED BASE type system (ADR-0024, ADR-0025).
 #
-# Single source of truth for the VOCABULARY (node + edge kinds), with POLICY
-# (weights/tiers) and PROJECTION (path→tier rules) as adjacent, separately-consumed
-# layers. This file IS the documentation of the kind system; edit here, and the
-# extraction prompt + validation regenerate from it.
+# This file ships INSIDE the kernel package, so every project that uses `ck` inherits it
+# without copying. It is the global layer: the closed structural vocabulary, the advisory
+# semantic vocabulary, default policy, default projection, and the concept TYPE SCHEMA.
 #
-# `family` encodes epistemics AND the open/closed posture (ADR-0024 §1):
-#   structural — parser-derived, literal, CLOSED. The LLM never emits these.
-#   semantic   — LLM-inferred, ADVISORY. Each `definition` is injected into the
-#                extraction prompt; undeclared kinds the model surfaces are retained
-#                (not rejected) but fall to the default weight.
-#   concept    — deterministic alias grounding, CLOSED.
+# Per-project `ontology.yaml` overlays (in a repo root or its `.context-kernel/`) are
+# COMPOSED on top at ingest by `compose_ontology` under "global meaning, local binding":
+#   structural kinds — base-only, closed (parsers emit them).
+#   semantic kinds   — base + per-project ADD; overlays never redefine a base kind.
+#   policy           — base-only (run-scoped overrides live in config.toml / CK_SCORING_*).
+#   projection       — per-project bindings → global tiers.
+#   concepts         — instances live in overlays; this file only declares their TYPES.
 #
-# `weight` / `centrality` (edges only) are POLICY annotations on the term. They are
-# the kernel DEFAULTS; per-repo / per-sweep overrides still live in config.toml
-# `[ingester.scoring]` + CK_SCORING_* and win on top (ADR-0015 / ADR-0022).
-#
-# Phase 1 (ADR-0024) wires only the vocabulary (nodes/edges → prompt + validation).
-# `policy:` and `projection:` are loaded but not yet authoritative — scoring.py /
-# source_kinds.py still own them until Phases 2–3.
+# `family` encodes epistemics AND posture (ADR-0024 §1): structural / semantic / concept.
+# `weight` / `centrality` (edges) are POLICY annotations (kernel defaults).
 
 version: 1
 
@@ -75,7 +70,8 @@ edges:
   - {kind: implements, family: structural, weight: 0.9, centrality: true,  definition: "Code literally defines/implements a type (e.g. class Foo implements Bar)."}
   - {kind: inherits,   family: structural, weight: 0.9, centrality: true,  definition: A type inherits from another.}
   - {kind: imports,    family: structural, weight: 0.3, centrality: false, definition: "A module imports another. Ubiquitous — starved so it does not flood."}
-  - {kind: contains,   family: structural, weight: 0.5, centrality: false, definition: An IaC container (e.g. a module) holds a member resource (anchor→resource).}
+  - {kind: calls,      family: structural, weight: 0.6, centrality: false, definition: "A function or method invokes another (caller→callee). Orchestration depth; method-name granularity (receiver lost), intra-portfolio only. centrality:false — in-degree marks called-by-many leaves, not orchestrators."}
+  - {kind: contains,   family: structural, weight: 0.5, centrality: false, definition: "A file/module anchor holds a definition it declares (anchor→member): a module contains its classes/functions; an IaC module contains its resources."}
   - {kind: references, family: structural, weight: 0.5, centrality: false, definition: One IaC entity references another.}
 
   # ── semantic (advisory) — these definitions become the prompt's relationship bullets ──
@@ -107,6 +103,7 @@ edges:
 
   # ── concept grounding (deterministic) ──────────────────────────────────────
   - {kind: implemented-by, family: concept, weight: 0.9, centrality: true, definition: A concept hub is implemented by a code anchor (deterministic alias match).}
+  - {kind: manifested-by,  family: concept, weight: 0.7, centrality: false, definition: An aspect-concept hub is manifested by a code node (recall + LLM-judge grounding; declared, not yet wired — ADR-0025 §4).}
 
 # ── POLICY (Phase 2; loaded, not yet authoritative — scoring.py owns these today) ──
 policy:
@@ -138,9 +135,13 @@ projection:
     SPEC:         ["plan.md", "docs/features/*", "specs/*"]
     EPHEMERAL:    ["*readme*", "*handoff*", "*notes*", "*scratch*", "*todo*"]
 
-# ── CONCEPT GROUNDING (Phase 3; migrates from ontology.toml [concepts.*]; SKOS keys) ──
-# concepts:
-#   knowledge_store:
-#     prefLabel: KnowledgeStore
-#     altLabel:  [graph store, knowledge graph backend]
-#     definition: The mutable graph state behind a Parnas protocol.
+# ── CONCEPT TYPE SCHEMA (ADR-0025 §4) ─────────────────────────────────────────
+# The base declares the concept TYPES (how each grounds, what edge it emits). Concept
+# INSTANCES live in per-project / portfolio overlays' `concepts:` blocks and conform to this.
+concept_types:
+  entity:                          # a symbol IS an instance of the concept
+    grounding: alias-match         # deterministic: normalize(name|alias) ∈ {prefLabel, altLabel}
+    emits: implemented-by          # concept hub → matched code anchor (ADR-0018)
+  aspect:                          # a symbol PARTICIPATES IN the concept
+    grounding: recall-then-judge   # recall_keywords/structural_patterns gather; LLM judge confirms
+    emits: manifested-by           # concept hub → code node (declared; grounding not yet wired)

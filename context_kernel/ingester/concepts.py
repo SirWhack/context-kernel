@@ -8,12 +8,12 @@ classification and CodeSpan evidence remain separate, heavier passes.
 from __future__ import annotations
 
 import hashlib
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 from context_kernel.graph.protocol import Entity, Relationship
 from context_kernel.ingester.entity_resolver import normalize
+from context_kernel.ontology import SCOPE_PORTFOLIO, Ontology
 from context_kernel.source_kinds import is_code_path
 
 
@@ -25,54 +25,52 @@ class ConceptSpec:
     alt_labels: tuple[str, ...]
     definition: str
     source_path: str
+    scope: str = SCOPE_PORTFOLIO    # "portfolio" → cross-repo hub; "project" → scoped (ADR-0025)
+    project: str | None = None      # the owning project for project-scoped concepts
 
     @property
     def aliases(self) -> tuple[str, ...]:
         return (self.pref_label, *self.alt_labels)
 
+    @property
+    def node_id(self) -> str:
+        """Namespaced hub id: portfolio concepts share one id across repos (the bridge);
+        project concepts are namespaced by project, so same-key concepts stay distinct."""
+        namespace = "portfolio" if self.scope == SCOPE_PORTFOLIO else (self.project or "")
+        return _hub_id(namespace, self.key)
 
-def _as_list(value: object) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, list):
-        return tuple(str(v) for v in value)
-    return ()
 
-
-def load_ontology(portfolio_root: Path) -> tuple[Path | None, list[ConceptSpec]]:
-    """Load `[concepts.<key>]` from `ontology.toml` or `.context-kernel/ontology.toml`."""
-    candidates = [
-        portfolio_root / "ontology.toml",
-        portfolio_root / ".context-kernel" / "ontology.toml",
-    ]
-    path = next((p for p in candidates if p.exists()), None)
-    if path is None:
-        return None, []
-
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
-    concepts = raw.get("concepts", {})
-    if not isinstance(concepts, dict):
-        return path, []
-
-    rel = path.relative_to(portfolio_root).as_posix()
-    specs: list[ConceptSpec] = []
-    for key, spec in concepts.items():
-        if not isinstance(spec, dict):
-            continue
-        label = str(spec.get("prefLabel") or spec.get("label") or key)
-        specs.append(ConceptSpec(
-            key=str(key),
-            pref_label=label,
-            concept_type=str(spec.get("type", "entity")).lower(),
-            alt_labels=_as_list(spec.get("altLabel", spec.get("aliases", []))),
-            definition=str(spec.get("definition", spec.get("scopeNote", ""))),
-            source_path=rel,
-        ))
-    return path, specs
+def _hub_id(namespace: str, key: str) -> str:
+    return hashlib.sha256(f"{namespace}|concept|{key}".encode()).hexdigest()
 
 
 def concept_id(key: str) -> str:
-    return hashlib.sha256(f"portfolio|concept|{key}".encode()).hexdigest()
+    """Portfolio-namespaced hub id (the cross-repo bridge). Back-compat helper."""
+    return _hub_id("portfolio", key)
+
+
+def concepts_from_ontology(ontology: Ontology | None, *, project: str | None = None) -> list[ConceptSpec]:
+    """Build grounding specs from a composed ontology's `concepts:` block (ADR-0025 §4).
+
+    Replaces the old `ontology.toml` loader: concept INSTANCES now live in the per-project /
+    portfolio overlay YAML, already tagged with locality by `compose_ontology`. `project` names
+    the repo whose project-scoped concepts these are (used for hub-id namespacing)."""
+    if ontology is None:
+        return []
+    specs: list[ConceptSpec] = []
+    for c in ontology.concepts:
+        scope = c.scope or SCOPE_PORTFOLIO
+        specs.append(ConceptSpec(
+            key=c.key,
+            pref_label=c.pref_label,
+            concept_type=c.type,
+            alt_labels=c.alt_labels,
+            definition=c.definition,
+            source_path=c.source_path or "ontology.yaml",
+            scope=scope,
+            project=None if scope == SCOPE_PORTFOLIO else project,
+        ))
+    return specs
 
 
 def ground_entity_concepts(
@@ -103,7 +101,7 @@ def ground_entity_concepts(
         if not hits:
             continue
 
-        cid = concept_id(spec.key)
+        cid = spec.node_id
         alias_text = ", ".join(spec.alt_labels) if spec.alt_labels else "(none)"
         definition = spec.definition or f"Curated entity concept for {spec.pref_label}."
         desc = (

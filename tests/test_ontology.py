@@ -14,8 +14,12 @@ from context_kernel.ingester.summarizer import (
     _cache_key,
 )
 from context_kernel.ontology import (
+    SCOPE_PORTFOLIO,
+    SCOPE_PROJECT,
     Ontology,
+    compose_ontology,
     is_ontology_file,
+    load_base_ontology,
     load_ontology,
 )
 
@@ -128,17 +132,81 @@ def test_summarizer_with_ontology_derives_prompt_and_hash(tmp_path: Path):
 
 
 def test_committed_ontology_reproduces_default_prompt_exactly():
-    """The repo's ontology.yaml must stay byte-for-byte in sync with the code fallback.
+    """The shipped base ontology must stay byte-for-byte in sync with the code fallback.
 
-    This is the anti-drift guard (ADR-0024): the prompt built from the committed
-    vocabulary must equal the hardcoded `_SYSTEM_PROMPT`. If someone edits one without
-    the other, this fails — which is the whole point of a single source of truth.
+    This is the anti-drift guard (ADR-0024/0025): the prompt built from the packaged base
+    vocabulary must equal the hardcoded `_SYSTEM_PROMPT`. If someone edits one without the
+    other, this fails — which is the whole point of a single source of truth.
     """
-    ont = load_ontology(_REPO_ROOT)
-    assert ont is not None, "repo ontology.yaml should load"
+    from context_kernel.ontology import load_base_ontology
+
+    ont = load_base_ontology()
+    assert ont is not None, "packaged ontology.base.yaml should load"
     from context_kernel.ingester.summarizer import build_system_prompt
 
     rebuilt = build_system_prompt(ont.entity_bullets(), ont.relationship_bullets())
     assert rebuilt == _SYSTEM_PROMPT
     assert ont.entity_kinds() == ENTITY_KINDS
     assert ont.relationship_kinds() == RELATIONSHIP_KINDS
+
+
+# ── ADR-0025: composition, base, overlays, concept locality ─────────────────
+
+def test_base_ships_and_declares_calls_contains_and_concept_types():
+    base = load_base_ontology()
+    assert base is not None, "packaged base must load"
+    edge_names = {e.name for e in base.edges}
+    assert {"calls", "contains"} <= edge_names           # structural orchestration/containment
+    assert {ct.name for ct in base.concept_types} == {"entity", "aspect"}
+
+
+def test_compose_returns_base_when_no_overlays(tmp_path: Path):
+    composed = compose_ontology(tmp_path)
+    base = load_base_ontology()
+    assert composed is not None and base is not None
+    assert {k.name for k in composed.nodes} == {k.name for k in base.nodes}
+
+
+def test_compose_adds_semantic_kind_but_locks_structural_and_redefinition(tmp_path: Path):
+    _write(tmp_path, (
+        "nodes:\n"
+        "  - {kind: feature-flag, family: semantic, definition: A toggle.}\n"   # ADD → kept
+        "  - {kind: decision, family: semantic, definition: HIJACKED.}\n"        # redefine → ignored
+        "edges:\n"
+        "  - {kind: calls, family: structural, weight: 0.99, definition: HIJACKED.}\n"  # structural → ignored
+    ))
+    composed = compose_ontology(tmp_path)
+    nodes = {k.name: k for k in composed.nodes}
+    assert "feature-flag" in nodes                                   # union-add worked
+    assert nodes["decision"].definition != "HIJACKED."               # base def preserved
+    calls = next(e for e in composed.edges if e.name == "calls")
+    assert calls.weight == 0.6                                        # base weight, overlay ignored
+
+
+def test_compose_concept_locality_by_layer(tmp_path: Path):
+    # portfolio overlay → portfolio-scoped (bridge); project overlay → project-scoped.
+    port = tmp_path / "port"
+    proj = tmp_path / "port" / "app"
+    proj.mkdir(parents=True)
+    _write(port, "concepts:\n  auth:\n    type: aspect\n    prefLabel: Auth\n    definition: d\n")
+    _write(proj, "concepts:\n  widget:\n    type: entity\n    prefLabel: Widget\n")
+    composed = compose_ontology(portfolio_root=port, project_root=proj)
+    scope = {c.key: c.scope for c in composed.concepts}
+    assert scope["auth"] == SCOPE_PORTFOLIO
+    assert scope["widget"] == SCOPE_PROJECT
+
+
+def test_compose_explicit_scope_override_promotes_project_concept(tmp_path: Path):
+    _write(tmp_path, "concepts:\n  shared:\n    type: aspect\n    scope: portfolio\n    prefLabel: Shared\n    definition: d\n")
+    # Loaded as a project overlay, but explicit scope:portfolio makes it a bridge anyway.
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    composed = compose_ontology(portfolio_root=sub, project_root=tmp_path)
+    assert next(c for c in composed.concepts if c.key == "shared").scope == SCOPE_PORTFOLIO
+
+
+def test_compose_content_hash_is_composition_aware(tmp_path: Path):
+    base_only = compose_ontology(tmp_path).content_hash
+    _write(tmp_path, "concepts:\n  x:\n    type: entity\n    prefLabel: X\n")
+    with_overlay = compose_ontology(tmp_path).content_hash
+    assert base_only != with_overlay  # an overlay edit changes the per-project cache key

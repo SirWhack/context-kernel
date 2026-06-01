@@ -54,6 +54,7 @@ EDGE_WEIGHTS: dict[str, float] = {
     "implemented-by": 0.9,  # concept hub → code grounding (deterministic ontology alias)
     "supersedes": 0.85,   # semantic
     "addresses": 0.7,     # semantic
+    "calls": 0.6,         # structural — orchestration depth (ADR-0021)
     "motivates": 0.5,     # semantic
     "imports": 0.3,       # structural — ubiquitous, starved so it doesn't flood
 }
@@ -244,11 +245,13 @@ def classify_source(path: str, cfg: ScoringConfig = DEFAULTS) -> str:
     # (0.6, ADR-0022), not the prose catch-all. Matched by suffix before the prose
     # heuristics below. Checked after CODE so a `.py` etc. still wins; checked
     # before the prose tiers so a `.tf` is never demoted to the default.
+    # The kernel's own declarative files are CONTEXT, checked before is_ops_path so the
+    # `.yaml` ontology overlays are not demoted to the OPS tier (ADR-0024/0025).
+    if base in ("ontology.toml", "ontology.yaml", "ontology.yml", "ontology.base.yaml"):
+        return "CONTEXT"
     if is_ops_path(p):
         return "OPS"
     if base == "context.md":
-        return "CONTEXT"
-    if base == "ontology.toml":
         return "CONTEXT"
     if "reference" in base or "reference/" in p:
         return "REFERENCE"

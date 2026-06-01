@@ -127,6 +127,10 @@ class KnowledgeStore(Protocol):
         """Return scope→entity mapping. Used by cross-cutting views (S6)."""
         ...
 
+    def list_relationships(self) -> list[Relationship]:
+        """Return every edge in the current GraphCommit. Used by full-graph export (`ck graph`)."""
+        ...
+
     def upsert(
         self,
         graph_commit: GraphCommit,

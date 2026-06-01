@@ -42,6 +42,12 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_p = sub.add_parser("mcp")
     mcp_p.add_argument("--config", type=Path, default=None)
 
+    graph_p = sub.add_parser("graph", help="Export the knowledge graph as JSON for the visualizer")
+    graph_p.add_argument("--portfolio", type=Path, default=Path("."))
+    graph_p.add_argument("--config", type=Path, default=None)
+    graph_p.add_argument("--project", type=str, default=None, help="Limit export to one project (by name)")
+    graph_p.add_argument("--out", type=Path, default=None, help="Write JSON to this file; stdout if omitted")
+
     return p
 
 
@@ -78,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
             _cmd_check(args, config)
         elif args.command == "mcp":
             _cmd_mcp(args, config)
+        elif args.command == "graph":
+            _cmd_graph(args, config)
     except Exception as exc:
         log.error("ck %s: %s", args.command, exc)
         exit_code = 1
@@ -150,10 +158,12 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
     summarizer_key = _resolve_api_key(config.ingester.summarizer_api_key_env)
     embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
 
-    from context_kernel.ontology import load_ontology as load_ontology_yaml
+    from context_kernel.ontology import compose_ontology
 
     embedder = _build_embedder(config, embedder_key, metrics)
-    ontology = load_ontology_yaml(portfolio)
+    # Seed with the composed portfolio-level ontology; ingest() swaps in each project's
+    # composed ontology (base ⊕ portfolio ⊕ project overlay) before that project's chunks.
+    ontology = compose_ontology(portfolio)
     summarizer = LLMSummarizer(
         endpoint=config.ingester.summarizer_endpoint,
         model=config.ingester.summarizer_model,
@@ -227,6 +237,26 @@ def _cmd_mcp(args: argparse.Namespace, config) -> None:
     embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
     embedder = _build_embedder(config, embedder_key)
     serve(portfolio, store, config.orientation, embedder=embedder)
+
+
+def _cmd_graph(args: argparse.Namespace, config) -> None:
+    import json
+
+    from context_kernel.graph_export import build_graph_export, resolved_projects
+
+    if args.project is not None:
+        known = resolved_projects(config)
+        if args.project not in known:
+            raise ValueError(f"Unknown project {args.project!r}; known: {known}")
+
+    store = _build_store(config.portfolio_root)
+    data = build_graph_export(store, config, project=args.project)
+    payload = json.dumps(data, indent=2)
+    if args.out is not None:
+        args.out.write_text(payload, encoding="utf-8")
+        print(args.out)
+    else:
+        print(payload)
 
 
 if __name__ == "__main__":

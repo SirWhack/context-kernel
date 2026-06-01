@@ -313,6 +313,15 @@ class PythonHandler:
         # ── Class entities ───────────────────────────────────────────
         for cls in classes:
             entities.append(_extract_class(cls, rel_path))
+            # Containment anchor→member (ADR-0021 structural family), matching the
+            # TerraformHandler `contains` pattern. Same-file endpoints, so the resolver's
+            # exact (name, source_file) index pins them — immune to cross-file collisions.
+            relationships.append(RawRelationship(
+                source_name=module_name,
+                target_name=cls.name,
+                kind="contains",
+                description=f"{module_name} contains {cls.name}",
+            ))
             for base_name in _base_names(cls):
                 relationships.append(RawRelationship(
                     source_name=cls.name,
@@ -320,10 +329,30 @@ class PythonHandler:
                     kind="inherits",
                     description=f"{cls.name} inherits from {base_name}",
                 ))
+            # Calls attribute to the class: methods are not standalone entities, so a
+            # method body's calls hang off the enclosing class node.
+            for callee in sorted(_calls_in(cls)):
+                if callee != cls.name:
+                    relationships.append(RawRelationship(
+                        source_name=cls.name, target_name=callee,
+                        kind="calls", description=f"{cls.name} calls {callee}",
+                    ))
 
         # ── Function entities ────────────────────────────────────────
         for func in functions:
             entities.append(_extract_function(func, rel_path))
+            relationships.append(RawRelationship(
+                source_name=module_name,
+                target_name=func.name,
+                kind="contains",
+                description=f"{module_name} contains {func.name}",
+            ))
+            for callee in sorted(_calls_in(func)):
+                if callee != func.name:
+                    relationships.append(RawRelationship(
+                        source_name=func.name, target_name=callee,
+                        kind="calls", description=f"{func.name} calls {callee}",
+                    ))
 
         return entities, relationships
 
@@ -425,6 +454,25 @@ def _extract_function(func: ast.FunctionDef | ast.AsyncFunctionDef, rel_path: st
     return RawEntity(name=func.name, kind="function", description=desc)
 
 
+def _calls_in(node: ast.AST) -> set[str]:
+    """Callee names invoked anywhere in this subtree (`ast.Name` → id, `ast.Attribute` → attr).
+
+    Method-name granularity: `self.foo()` and `obj.foo()` both yield `foo` — the receiver is
+    lost, so this over-links to any same-named callee. Unresolvable callees (stdlib, externals,
+    locals) are dropped downstream by the EntityResolver, and ambiguous names never guess a
+    target (ADR-0017) — so the surviving edges are the intra-portfolio, unambiguous calls.
+    """
+    out: set[str] = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            fn = n.func
+            if isinstance(fn, ast.Name):
+                out.add(fn.id)
+            elif isinstance(fn, ast.Attribute):
+                out.add(fn.attr)
+    return out
+
+
 # ── TypeScript/JS (StructuredHandler) ──────────────────────────────────
 
 
@@ -448,6 +496,30 @@ def _ts_find_children(node: Node, type_name: str) -> list[Node]:
 
 def _ts_loc(node: Node) -> int:
     return node.end_point[0] - node.start_point[0] + 1
+
+
+def _ts_calls_in(node: Node) -> set[str]:
+    """Callee names invoked within this subtree. `foo()` yields `foo`; `obj.foo()` and
+    `this.foo()` yield the property `foo` (receiver lost — same caveat as the Python walker)."""
+    out: set[str] = set()
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.type == "call_expression":
+            for c in n.children:
+                if c.type == "identifier":
+                    out.add(_ts_node_text(c))
+                    break
+                if c.type == "member_expression":
+                    prop = None
+                    for mc in c.children:
+                        if mc.type in ("property_identifier", "identifier"):
+                            prop = mc
+                    if prop is not None:
+                        out.add(_ts_node_text(prop))
+                    break
+        stack.extend(n.children)
+    return out
 
 
 def _ts_has_accessibility(node: Node, modifier: str) -> bool:
@@ -648,6 +720,8 @@ class TypeScriptHandler:
         module_name = path.stem
         total_loc = source_text.count("\n") + 1
 
+        # (entity name, AST subtree) for each callable, walked for `calls` edges after the loop.
+        callable_scopes: list[tuple[str, Node]] = []
         exported_names: list[str] = []
         private_names: list[str] = []
         imports: list[str] = []
@@ -713,6 +787,7 @@ class TypeScriptHandler:
                 kind_label = "Class"
                 ent = _ts_extract_class_like(inner, kind_label, rel_path)
                 entities.append(ent)
+                callable_scopes.append((ent.name, inner))
                 if is_exported:
                     exported_names.append(ent.name)
                 else:
@@ -768,6 +843,7 @@ class TypeScriptHandler:
                 fname = _ts_node_text(name_node) if name_node else "?"
                 ent = _ts_extract_function(fname, inner, rel_path, exported=is_exported)
                 entities.append(ent)
+                callable_scopes.append((fname, inner))
                 if is_exported:
                     exported_names.append(fname)
                 else:
@@ -787,6 +863,7 @@ class TypeScriptHandler:
                     if initializer:
                         ent = _ts_extract_arrow_function(vname, initializer, rel_path, exported=is_exported)
                         entities.append(ent)
+                        callable_scopes.append((vname, initializer))
                     else:
                         pass
                     if is_exported:
@@ -847,5 +924,27 @@ class TypeScriptHandler:
             f"  Depth: {len(exported_names)} exports, {len(non_entity_private)} private, {total_loc} LOC"
         )
         entities.insert(0, RawEntity(name=module_name, kind="module", description=module_desc))
+
+        # Containment anchor→member (ADR-0021), uniform with PythonHandler/TerraformHandler.
+        # Skip the eponymous case (e.g. Foo.ts → `class Foo`) where the member shares the
+        # module's (name, source_file) and would resolve to the anchor itself (sid == tid).
+        for ent in entities:
+            if ent.kind != "module" and ent.name != module_name:
+                relationships.append(RawRelationship(
+                    source_name=module_name,
+                    target_name=ent.name,
+                    kind="contains",
+                    description=f"{module_name} contains {ent.name}",
+                ))
+
+        # Calls (caller→callee), sorted for deterministic graph_commit. Methods/nested
+        # bodies attribute to their enclosing class/function entity.
+        for cname, cnode in callable_scopes:
+            for callee in sorted(_ts_calls_in(cnode)):
+                if callee != cname:
+                    relationships.append(RawRelationship(
+                        source_name=cname, target_name=callee,
+                        kind="calls", description=f"{cname} calls {callee}",
+                    ))
 
         return entities, relationships

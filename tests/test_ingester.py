@@ -163,6 +163,40 @@ class TestPythonHandlerExtract:
         assert "pathlib.Path" in names
         assert "os" in names
 
+    def test_contains_relationships(self, tmp_path):
+        f = tmp_path / "mod.py"
+        f.write_text(
+            "class Foo:\n"
+            "    pass\n"
+            "def helper() -> None:\n"
+            "    pass\n"
+        )
+        h = PythonHandler()
+        _, rels = h.extract(f)
+        contains = {r.target_name for r in rels if r.kind == "contains"}
+        # The module anchor contains both the class and the top-level function.
+        assert contains == {"Foo", "helper"}
+        assert all(r.source_name == "mod" for r in rels if r.kind == "contains")
+
+    def test_calls_relationships(self, tmp_path):
+        f = tmp_path / "loop.py"
+        f.write_text(
+            "def tool() -> None:\n"
+            "    pass\n"
+            "def run() -> None:\n"
+            "    tool()\n"
+            "    run()\n"  # self-recursion: dropped (callee == caller)
+            "class Agent:\n"
+            "    def step(self) -> None:\n"
+            "        helper()\n"
+        )
+        h = PythonHandler()
+        _, rels = h.extract(f)
+        calls = {(r.source_name, r.target_name) for r in rels if r.kind == "calls"}
+        assert ("run", "tool") in calls       # function → function
+        assert ("Agent", "helper") in calls    # method body attributes to the class
+        assert ("run", "run") not in calls     # self-recursion skipped
+
     def test_protocol_base_detection(self, tmp_path):
         f = tmp_path / "proto.py"
         f.write_text(
@@ -304,6 +338,35 @@ class TestTypeScriptHandlerExtract:
         assert "Internals:" in desc
         assert "_cache" in desc
         assert "_doWork" in desc
+
+    def test_contains_relationships(self, tmp_path):
+        f = tmp_path / "service.ts"
+        f.write_text(
+            "export class MyService {}\n"
+            "export function helper(): void {}\n"
+            "export const build = (): void => {};\n"
+        )
+        h = TypeScriptHandler()
+        _, rels = h.extract(f)
+        contains = {r.target_name for r in rels if r.kind == "contains"}
+        # Module anchor contains class, function declaration, and arrow-function const.
+        assert contains == {"MyService", "helper", "build"}
+        assert all(r.source_name == "service" for r in rels if r.kind == "contains")
+
+    def test_calls_relationships(self, tmp_path):
+        f = tmp_path / "loop.ts"
+        f.write_text(
+            "export function tool(): void {}\n"
+            "export function run(): void {\n"
+            "    tool();\n"
+            "    this.helper();\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        _, rels = h.extract(f)
+        calls = {(r.source_name, r.target_name) for r in rels if r.kind == "calls"}
+        assert ("run", "tool") in calls       # bare call → identifier
+        assert ("run", "helper") in calls      # member call → property name
 
     def test_class_depth_metrics(self, tmp_path):
         f = tmp_path / "deep.ts"
@@ -1299,12 +1362,13 @@ class TestIngestProjectNamespacing:
         assert any("app.py" in e.description for e in store.entities)
 
     def test_curated_entity_concepts_ground_into_portfolio_graph(self, tmp_path):
-        (tmp_path / "ontology.toml").write_text(
-            "[concepts.panel]\n"
-            'prefLabel = "panel"\n'
-            'type = "entity"\n'
-            'altLabel = ["StepPanel"]\n'
-            'definition = "A UI panel concept."\n'
+        (tmp_path / "ontology.yaml").write_text(
+            "concepts:\n"
+            "  panel:\n"
+            "    type: entity\n"
+            "    prefLabel: panel\n"
+            "    altLabel: [StepPanel]\n"
+            "    definition: A UI panel concept.\n"
         )
         (tmp_path / "ui.py").write_text("class StepPanel:\n    pass\n")
         store = _FakeStore()
@@ -1317,11 +1381,12 @@ class TestIngestProjectNamespacing:
         assert any(r.source_id == concept.id and r.target_id == step.id for r in edges)
 
     def test_portfolio_concept_hub_bridges_projects(self, tmp_path):
-        (tmp_path / "ontology.toml").write_text(
-            "[concepts.panel]\n"
-            'prefLabel = "panel"\n'
-            'type = "entity"\n'
-            'altLabel = ["StepPanel", "Panel"]\n'
+        (tmp_path / "ontology.yaml").write_text(
+            "concepts:\n"
+            "  panel:\n"
+            "    type: entity\n"
+            "    prefLabel: panel\n"
+            "    altLabel: [StepPanel, Panel]\n"
         )
         dir_a = tmp_path / "frontend"
         dir_b = tmp_path / "backend"
