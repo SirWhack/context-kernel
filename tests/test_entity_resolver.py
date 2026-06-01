@@ -32,6 +32,23 @@ def test_unambiguous_merge_spans_code_and_docs():
     assert stats["code_and_doc_nodes"] == 1
 
 
+def test_expanded_structured_handlers_count_as_code():
+    ents = [
+        E("Game", "struct", "src/game.rs"),
+        E("Game", "interface", "docs/design.md"),
+        E("Api", "type", "schema/api.graphql"),
+        E("Api", "interface", "docs/api.md"),
+        E("Widget", "class", "web/widget.jsx"),
+        E("Widget", "workflow", "docs/ui.md"),
+    ]
+    nodes, _edges, stats = resolve(ents, [])
+    by_name = {n.name: n for n in nodes}
+    assert by_name["Game"].is_code is True
+    assert by_name["Api"].is_code is True
+    assert by_name["Widget"].is_code is True
+    assert stats["code_and_doc_nodes"] == 3
+
+
 def test_collision_guard_keeps_distinct_code_defs_attaches_by_embedding():
     ents = [
         E("Client", "class", "a/client.py", emb=[1.0, 0.0, 0.0]),

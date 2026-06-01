@@ -139,7 +139,7 @@ def _build_embedder(config, api_key: str | None, metrics=None):
 
 
 def _cmd_ingest(args: argparse.Namespace, config) -> str:
-    from context_kernel.ingester import ingest
+    from context_kernel.ingester import ingest_portfolio
     from context_kernel.ingester.summarizer import LLMSummarizer
     from context_kernel.types import LLMMetrics
 
@@ -158,16 +158,20 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
         api_key=summarizer_key,
         metrics=metrics,
     )
-    commit = None
-    for project in config.projects:
-        project_name = None if project.path == Path(".") else project.name
-        commit = ingest(
-            store, portfolio / project.path, portfolio, config.ingester,
-            project_name=project_name,
-            summarizer=summarizer,
-            embedder=embedder,
-            metrics=metrics,
-        )
+    projects = [
+        (project.path, None if project.path == Path(".") else project.name)
+        for project in config.projects
+    ]
+    commit = ingest_portfolio(
+        store,
+        portfolio,
+        portfolio,
+        config.ingester,
+        projects,
+        summarizer=summarizer,
+        embedder=embedder,
+        metrics=metrics,
+    )
     return str(commit)
 
 

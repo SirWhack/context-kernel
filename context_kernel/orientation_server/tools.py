@@ -11,6 +11,7 @@ from context_kernel import scoring
 from context_kernel.graph.protocol import KnowledgeStore, SearchResult
 from context_kernel.materializer.headers import parse
 from context_kernel.scoring import ScoringConfig
+from context_kernel.source_kinds import CODE_EXT
 from context_kernel.types import ScopePath
 
 if TYPE_CHECKING:
@@ -52,9 +53,6 @@ def assemble(chunks: list[str], source_paths: list[str], max_tokens: int) -> str
         if para > budget // 2:
             result = cut[:para]
     return result
-
-
-_CODE_EXT = (".py", ".ts", ".tsx", ".js", ".jsx")
 
 
 def rank_by_relevance(
@@ -132,7 +130,7 @@ def _expand_neighbors(
     out: list[tuple[float, bool, SearchResult]] = []
     for sc, nb in admitted:
         ent = nb.entity
-        src = next((s for s in ent.sources if s.endswith(_CODE_EXT)),
+        src = next((s for s in ent.sources if s.endswith(CODE_EXT)),
                    ent.sources[0] if ent.sources else "")
         out.append((sc, False, SearchResult(
             chunk_text=ent.description,

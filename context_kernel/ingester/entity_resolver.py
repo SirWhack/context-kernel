@@ -16,7 +16,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Sequence
 
-CODE_EXT = (".py", ".ts", ".tsx", ".js")
+from context_kernel.source_kinds import CODE_EXT, is_code_path
+
 # Names too generic to ever carry concept identity — never merged across files.
 STOPLIST = frozenset({"__init__", "__call__", "__main__", "main", "run", "setup", "conftest", "handler"})
 _ARTICLES = frozenset({"the", "a", "an"})
@@ -68,7 +69,7 @@ def normalize(name: str) -> str:
 
 
 def _is_code(source_file: str) -> bool:
-    return source_file.endswith(CODE_EXT)
+    return is_code_path(source_file)
 
 
 def _cosine(a: Sequence[float] | None, b: Sequence[float] | None) -> float:

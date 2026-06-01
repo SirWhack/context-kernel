@@ -65,6 +65,46 @@ class TestUpsert:
         results = store.search_similar(emb, 10)
         assert len(results) == 1
 
+    def test_upsert_replaces_prior_snapshot(self, tmp_path):
+        import struct
+
+        store = LightRAGStore(tmp_path / "graph")
+        emb_old = struct.pack("3f", 1.0, 0.0, 0.0)
+        emb_new = struct.pack("3f", 0.0, 1.0, 0.0)
+        old_chunk = EmbeddedChunk(
+            id="old", embedding=emb_old, chunk_text="old",
+            source_path="old.py", kind="entity", scope=ScopePath(Path("old")),
+        )
+        new_chunk = EmbeddedChunk(
+            id="new", embedding=emb_new, chunk_text="new",
+            source_path="new.py", kind="entity", scope=ScopePath(Path("new")),
+        )
+
+        store.upsert(
+            GraphCommit("c1"),
+            [_entity("old", "Old"), _entity("keep", "Keep")],
+            [_rel("old", "keep")],
+            [_summary("old", "old summary")],
+            [old_chunk],
+            {ScopePath(Path("old")): [_entity("old", "Old")]},
+        )
+        store.upsert(
+            GraphCommit("c2"),
+            [_entity("new", "New")],
+            [],
+            [_summary("new", "new summary")],
+            [new_chunk],
+            {ScopePath(Path("new")): [_entity("new", "New")]},
+        )
+
+        assert store.get_entity("old") is None
+        assert store.get_entity("new") is not None
+        assert store.get_neighbors("keep") == []
+        assert store.get_summary(ScopePath(Path("old"))) is None
+        assert store.get_summary(ScopePath(Path("new"))).markdown == "new summary"
+        assert set(store.list_entities_by_scope()) == {ScopePath(Path("new"))}
+        assert [r.chunk_text for r in store.search_similar(emb_old, 10)] == ["new"]
+
 
 class TestGetNeighbors:
     def test_returns_related_entities(self, tmp_path):
