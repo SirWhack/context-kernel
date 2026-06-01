@@ -1,0 +1,69 @@
+{
+  "name": "context-kernel-graph",
+  "displayName": "Context Kernel Graph",
+  "description": "Visualize the Context Kernel knowledge graph: files, entities, and cross-repo concept bridges.",
+  "version": "0.0.1",
+  "publisher": "contigo",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onCommand:contextKernel.showGraph",
+    "onCommand:contextKernel.refreshGraph"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "contextKernel.showGraph",
+        "title": "Context Kernel: Show Graph"
+      },
+      {
+        "command": "contextKernel.refreshGraph",
+        "title": "Context Kernel: Refresh Graph (re-run ck)"
+      }
+    ],
+    "configuration": {
+      "title": "Context Kernel Graph",
+      "properties": {
+        "contextKernel.ckPath": {
+          "type": "string",
+          "default": "ck",
+          "description": "Path to the `ck` CLI. Use an absolute path to a venv binary, e.g. ${workspaceFolder}/.venv/bin/ck."
+        },
+        "contextKernel.portfolioRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Portfolio root (the directory containing .context-kernel). Leave empty to auto-detect by walking up from the active file or workspace folder."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "vscode:prepublish": "node esbuild.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@types/vscode": "^1.85.0",
+    "cytoscape": "^3.30.0",
+    "cytoscape-fcose": "^2.2.0",
+    "esbuild": "^0.23.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.11.0",
+    "elkjs": "^0.11.1",
+    "highlight.js": "^11.11.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
