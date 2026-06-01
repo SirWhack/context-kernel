@@ -108,6 +108,54 @@ def test_file_path_target_resolves_to_module_node():
     assert len(edges) == 2
 
 
+class TestPathSuffixResolution:
+    """`path.py:Symbol` and `path.py:line(-range)` targets — the doc extractor echoes these from
+    the ADR-0016 code context and the colon kept them from matching a bare name. They resolve
+    deterministically: a symbol to its definition in that file, a line ref to the file's module."""
+
+    def _graph(self):
+        return [
+            E("models", "module", "src/tools/models.py"),
+            E("ToolDefinition", "class", "src/tools/models.py"),
+            E("agent", "module", "src/bot/agent.py"),
+        ]
+
+    def test_path_symbol_resolves_to_symbol_in_that_file(self):
+        ents = self._graph()
+        rels = [ExtractedRelationship("doc", "src/tools/models.py:ToolDefinition", "realizes", "d.md")]
+        ents.append(E("doc", "decision", "d.md"))
+        nodes, edges, _ = resolve(ents, rels)
+        td = next(n for n in nodes if n.name == "ToolDefinition")
+        assert len(edges) == 1 and edges[0].target_id == td.id
+
+    def test_path_line_range_resolves_to_module(self):
+        ents = self._graph() + [E("doc", "decision", "d.md")]
+        rels = [ExtractedRelationship("doc", "src/bot/agent.py:407-432", "governed-by", "d.md")]
+        nodes, edges, _ = resolve(ents, rels)
+        mod = next(n for n in nodes if n.name == "agent" and n.kind == "module")
+        assert len(edges) == 1 and edges[0].target_id == mod.id
+
+    def test_path_single_line_resolves_to_module(self):
+        ents = self._graph() + [E("doc", "decision", "d.md")]
+        rels = [ExtractedRelationship("doc", "src/bot/agent.py:1088", "realizes", "d.md")]
+        _, edges, _ = resolve(ents, rels)
+        assert len(edges) == 1
+
+    def test_path_symbol_not_in_file_falls_back_to_module(self):
+        ents = self._graph() + [E("doc", "decision", "d.md")]
+        rels = [ExtractedRelationship("doc", "src/bot/agent.py:NoSuchClass", "realizes", "d.md")]
+        nodes, edges, _ = resolve(ents, rels)
+        mod = next(n for n in nodes if n.name == "agent" and n.kind == "module")
+        assert len(edges) == 1 and edges[0].target_id == mod.id
+
+    def test_non_path_colon_name_unaffected(self):
+        # A colon in a non-path name (e.g. a doc heading) must not trigger path parsing.
+        ents = [E("Note: caching", "decision", "d.md"), E("Other", "decision", "e.md")]
+        rels = [ExtractedRelationship("Other", "Note: caching", "references", "e.md")]
+        _, edges, _ = resolve(ents, rels)
+        assert len(edges) == 1   # resolves by name as usual, not via path parsing
+
+
 def test_stoplist_names_never_merge_across_files():
     ents = [
         E("__init__", "function", "a/x.py"),
@@ -116,6 +164,63 @@ def test_stoplist_names_never_merge_across_files():
     ]
     nodes, _, _ = resolve(ents, [])
     assert len(nodes) == 3                          # each stays local
+
+
+class TestMethodLeafResolution:
+    """Methods are stored qualified (`Class.method`) but call sites name them by bare leaf
+    (`self.handle_message()` → "handle_message"). The leaf index binds those to the real code
+    method, with code precedence over a same-named doc entity (closes the code→doc conflation),
+    and drops — never guesses — when >1 method shares the leaf (ADR-0017 extension)."""
+
+    def test_bare_call_binds_to_qualified_method(self):
+        ents = [
+            E("TicketBotAgent", "class", "src/bot/agent.py"),
+            E("TicketBotAgent.handle_message", "function", "src/bot/agent.py"),
+            E("TurnOrchestrator", "class", "src/bot/orch.py"),
+        ]
+        # TurnOrchestrator's body calls the bare leaf `handle_message`
+        rels = [ExtractedRelationship("TurnOrchestrator", "handle_message", "calls", "src/bot/orch.py")]
+        nodes, edges, _ = resolve(ents, rels)
+        method = next(n for n in nodes if n.name == "TicketBotAgent.handle_message")
+        assert len(edges) == 1
+        assert edges[0].target_id == method.id            # bound to real code, not dropped
+
+    def test_code_method_wins_over_doc_concept(self):
+        ents = [
+            E("TicketBotAgent", "class", "src/bot/agent.py"),
+            E("TicketBotAgent.handle_message", "function", "src/bot/agent.py"),
+            E("handle_message", "workflow", "docs/02-agent-loop.md"),   # prose twin
+            E("Caller", "class", "src/bot/orch.py"),
+        ]
+        rels = [ExtractedRelationship("Caller", "handle_message", "calls", "src/bot/orch.py")]
+        nodes, edges, _ = resolve(ents, rels)
+        method = next(n for n in nodes if n.name == "TicketBotAgent.handle_message")
+        assert len(edges) == 1
+        assert edges[0].target_id == method.id            # code wins; NOT the doc workflow
+
+    def test_ambiguous_method_leaf_drops_never_guesses(self):
+        ents = [
+            E("Planner", "class", "src/a.py"),
+            E("Planner.execute", "function", "src/a.py"),
+            E("Runner", "class", "src/b.py"),
+            E("Runner.execute", "function", "src/b.py"),          # leaf `execute` now shared
+            E("Caller", "class", "src/c.py"),
+        ]
+        rels = [ExtractedRelationship("Caller", "execute", "calls", "src/c.py")]
+        _, edges, _ = resolve(ents, rels)
+        assert edges == []                                # ambiguous leaf → dropped, not guessed
+
+    def test_same_file_same_named_methods_stay_distinct(self):
+        # Two classes in ONE file each define __init__; qualified names keep them separate
+        # (bare names would collapse to a single (name, file) node — data loss).
+        ents = [
+            E("Planner", "class", "src/x.py"),
+            E("Planner.__init__", "function", "src/x.py"),
+            E("Runner", "class", "src/x.py"),
+            E("Runner.__init__", "function", "src/x.py"),
+        ]
+        nodes, _, _ = resolve(ents, [])
+        assert {"Planner.__init__", "Runner.__init__"} <= {n.name for n in nodes}
 
 
 def R(src, tgt, kind="imports", src_file="vec/factory.py"):

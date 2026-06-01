@@ -30,6 +30,7 @@ class ExtractedEntity:
     source_file: str
     description: str = ""
     embedding: Sequence[float] | None = None
+    def_line: int | None = None
 
 
 @dataclass
@@ -39,6 +40,7 @@ class ExtractedRelationship:
     kind: str
     source_file: str
     description: str = ""
+    source_line: int | None = None
 
 
 @dataclass
@@ -52,6 +54,7 @@ class CanonicalEntity:
     sources: list[str] = field(default_factory=list)
     kinds: list[str] = field(default_factory=list)
     embedding: Sequence[float] | None = None
+    def_line: int | None = None  # first code definition line absorbed into this canonical node
 
 
 @dataclass
@@ -60,6 +63,7 @@ class ResolvedRelationship:
     target_id: str
     kind: str
     description: str = ""
+    source_line: int | None = None
 
 
 def normalize(name: str) -> str:
@@ -126,6 +130,8 @@ def resolve(
             node.sources.append(e.source_file)
         if e.kind and e.kind not in node.kinds:
             node.kinds.append(e.kind)
+        if e.def_line is not None and node.def_line is None:
+            node.def_line = e.def_line  # first code definition line wins
         exact_index[(e.name, e.source_file)] = node.id
 
     for key, members in groups.items():
@@ -200,10 +206,50 @@ def resolve(
             b = s.rsplit("/", 1)[-1]
             basename_module_id[b] = node.id if basename_module_id.get(b, node.id) == node.id else None
 
+    # Bare method-leaf index (ADR-0017 extension): call sites name a method by its bare leaf
+    # (`self.handle_message()` → "handle_message"), but methods are stored qualified
+    # (`TicketBotAgent.handle_message`). Map each UNIQUE code-method leaf to its node so those
+    # calls bind to real code — with code precedence over a same-named doc entity, which is what
+    # closes the code→doc call conflation. A leaf shared by >1 method (or a generic stoplist name
+    # like __init__) is ambiguous → None → dropped, never guessed (same stance as ambiguous bases).
+    leaf_index: dict[str, str | None] = {}
+    for node in canonical.values():
+        if not node.is_code:
+            continue
+        for surface in {node.name, *node.aliases}:
+            if "." not in surface:
+                continue
+            leaf = surface.rsplit(".", 1)[-1]
+            nb = normalize(leaf)
+            if not nb or leaf in STOPLIST or nb in STOPLIST:
+                continue
+            if nb in leaf_index and leaf_index[nb] != node.id:
+                leaf_index[nb] = None                # leaf shared by ≥2 methods → ambiguous
+            elif nb not in leaf_index:
+                leaf_index[nb] = node.id
+
     def _looks_like_path(name: str) -> bool:
         return "/" in name or name.endswith(CODE_EXT)
 
     def _resolve_endpoint(name: str, source_file: str) -> str | None:
+        # Path with a `:Symbol` or `:line(-range)` suffix — the doc extractor echoes these from
+        # the ADR-0016 code context ("src/a.py:Foo", "src/a.py:407-432"); the colon kept them from
+        # matching any bare name. A symbol resolves to that definition in that file; a line ref (or
+        # a symbol not found in the file) resolves to the file's module node. Deterministic, no
+        # guessing — the file is named explicitly, so there is no cross-file ambiguity.
+        fp, sep, suffix = name.strip().partition(":")
+        if sep and fp.endswith(CODE_EXT):
+            fp = fp.lstrip("./")
+            suffix = suffix.strip()
+            if suffix and not suffix[0].isdigit():
+                sym = exact_index.get((suffix, fp))
+                if sym:
+                    return sym                       # path:Symbol → that symbol in that file
+            if fp in file_module_id:
+                return file_module_id[fp]            # path:line, or symbol not found → the module
+            b = fp.rsplit("/", 1)[-1]
+            if basename_module_id.get(b):
+                return basename_module_id[b]
         if _looks_like_path(name):
             p = name.strip().lstrip("./").rstrip("/")
             if p in file_module_id:
@@ -219,8 +265,12 @@ def resolve(
         if b in ambiguous_bases:
             return None                          # ambiguous and not same-file → drop, never guess
         hit = name_index.get(b) or name_index.get(name)
+        if hit and canonical[hit].is_code:
+            return hit                           # unambiguous top-level code symbol wins outright
+        if b in leaf_index:                      # bare method-leaf: code-method, code precedence
+            return leaf_index[b]                 # unique → its id; ambiguous → None (drop, no guess)
         if hit:
-            return hit
+            return hit                           # doc-concept fallback (only when no code target)
         # Dotted import/inherits target — e.g. "open_webui.retrieval.vector.main.VectorDBBase"
         # or "fastapi.APIRouter". The full dotted path never matches a bare entity name, so
         # internal dependency edges were dropped wholesale and the graph went ~95% edgeless
@@ -244,17 +294,24 @@ def resolve(
     seen: set[tuple[str, str, str]] = set()
     resolved: list[ResolvedRelationship] = []
     dropped = 0
+    dropped_eps: list[tuple[str, str]] = []   # (unresolved endpoint, kind) — drop diagnostics
     for r in relationships:
         sid = _resolve_endpoint(r.source_name, r.source_file)
         tid = _resolve_endpoint(r.target_name, r.source_file)
         if not sid or not tid or sid == tid:
             dropped += 1
+            if not sid:
+                dropped_eps.append((r.source_name, r.kind))
+            if not tid:
+                dropped_eps.append((r.target_name, r.kind))
             continue
         k = (sid, tid, r.kind)
         if k in seen:
             continue
         seen.add(k)
-        resolved.append(ResolvedRelationship(source_id=sid, target_id=tid, kind=r.kind, description=r.description))
+        resolved.append(ResolvedRelationship(
+            source_id=sid, target_id=tid, kind=r.kind, description=r.description, source_line=r.source_line,
+        ))
 
     nodes = list(canonical.values())
     def _has_doc(n): return any(s.endswith(".md") for s in n.sources)
@@ -262,6 +319,23 @@ def resolve(
     cross = sum(1 for e in resolved
                 if (by_id[e.source_id].is_code and _has_doc(by_id[e.target_id]))
                 or (by_id[e.target_id].is_code and _has_doc(by_id[e.source_id])))
+    # Drop diagnostics (the standing denominator): classify why each endpoint dropped so a
+    # large drop count is never mistaken for lost data (see drop_diagnostics / ADR-0027).
+    from collections import Counter
+    from context_kernel.ingester.drop_diagnostics import classify_drops
+    code_name_count: Counter = Counter()
+    for n in nodes:
+        if n.is_code:
+            for surface in {n.name, *n.aliases}:
+                code_name_count[surface] += 1
+    drop_report = classify_drops(
+        dropped_eps,
+        code_name_count=dict(code_name_count),
+        ambiguous_bases=ambiguous_bases,
+        file_paths=set(file_module_id),
+        stoplist=STOPLIST,
+        normalize=normalize,
+    )
     stats = {
         "raw_entities": len(entities),
         "canonical_nodes": len(nodes),
@@ -270,6 +344,8 @@ def resolve(
         "raw_relationships": len(relationships),
         "resolved_edges": len(resolved),
         "dropped_edges": dropped,
+        "drops_recoverable": drop_report.recoverable_count,
+        "drop_report": drop_report,
         "cross_altitude_edges": cross,
         "ambiguous_names": len(ambiguous_bases),
     }

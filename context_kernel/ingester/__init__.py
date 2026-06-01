@@ -221,7 +221,7 @@ def _rewrite_path_mentions(
         return entities, relationships
     return (
         [
-            RawEntity(e.name, e.kind, e.description.replace(absolute, rel_path))
+            RawEntity(e.name, e.kind, e.description.replace(absolute, rel_path), def_line=e.def_line)
             for e in entities
         ],
         [
@@ -230,6 +230,7 @@ def _rewrite_path_mentions(
                 r.target_name,
                 r.kind,
                 r.description.replace(absolute, rel_path),
+                source_line=r.source_line,
             )
             for r in relationships
         ],
@@ -497,8 +498,11 @@ def ingest(
     for file_path, rel_path, handler in structured_files:
         re_, rr_ = handler.extract(file_path)
         re_, rr_ = _rewrite_path_mentions(re_, rr_, file_path=file_path, rel_path=rel_path)
-        raw_entities += [ExtractedEntity(e.name, e.kind, rel_path, e.description) for e in re_]
-        raw_relationships += [ExtractedRelationship(r.source_name, r.target_name, r.kind, rel_path, r.description) for r in rr_]
+        raw_entities += [ExtractedEntity(e.name, e.kind, rel_path, e.description, def_line=e.def_line) for e in re_]
+        raw_relationships += [
+            ExtractedRelationship(r.source_name, r.target_name, r.kind, rel_path, r.description, source_line=r.source_line)
+            for r in rr_
+        ]
     phase1_ms = int((time.monotonic() - t_phase1) * 1000)
 
     # ADR-0016: build the run-constant extraction context (known code entities + vocabulary)
@@ -583,7 +587,20 @@ def ingest(
     canonical, resolved_rels, rstats = resolve_entities(
         raw_entities, raw_relationships, project=project_name,
     )
+    drop_report = rstats.pop("drop_report", None)   # object — out of the metrics log; written as artifact
     log.info("entity_resolution", extra=rstats)
+    if drop_report is not None:
+        log.info("drop_diagnostics", extra={"drops_total": drop_report.total,
+                                            "drops_recoverable": drop_report.recoverable_count,
+                                            "drops_correct": drop_report.correct_count})
+        # Write the artifact only when blob_root is a separate location (the `.context-kernel`
+        # dir, excluded from source walking) — never into the source tree itself, which would
+        # pollute the next ingest's walk and break the deterministic graph_commit (ADR-0008).
+        if blob_root != sources_root:
+            from context_kernel.ingester.drop_diagnostics import format_report
+            diag = blob_root / "diagnostics" / "drops.md"
+            diag.parent.mkdir(parents=True, exist_ok=True)
+            diag.write_text(format_report(drop_report), encoding="utf-8")
 
     # Scoring pass (ADR-0015/0020). All formulas live in `scoring`; all git I/O in
     # `change_detection`. Here we only orchestrate: per-edge weight + drift, then
@@ -619,7 +636,7 @@ def ingest(
                 claimant_drift[claimant_c.id].append((drift, weight))
         all_relationships.append(Relationship(
             source_id=r.source_id, target_id=r.target_id, kind=r.kind,
-            description=r.description, weight=weight, drift=drift,
+            description=r.description, weight=weight, drift=drift, source_line=r.source_line,
         ))
 
     # Centrality: distinct-source in-degree over centrality kinds (resolver-global edge set).
@@ -636,6 +653,7 @@ def ingest(
             id=c.id, name=c.name, kind=c.kind, description=c.description,
             aliases=tuple(c.aliases), sources=tuple(c.sources), kinds=tuple(c.kinds),
             source_tier=tier, centrality=centrality_map.get(c.id, 0.0), confidence=conf,
+            def_line=c.def_line,
         )
         all_entities.append(ent)
         if c.embedding is not None:

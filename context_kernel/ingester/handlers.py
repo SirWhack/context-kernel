@@ -24,6 +24,7 @@ class RawEntity:
     name: str
     kind: str
     description: str
+    def_line: int | None = None  # 0-based start line of the definition (for line-anchored edges)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class RawRelationship:
     target_name: str
     kind: str
     description: str
+    source_line: int | None = None  # 0-based line of the call/import site in the source file
 
 
 # ── Handler protocols ────────────────────────────────────────────────────
@@ -232,6 +234,7 @@ class PythonHandler:
         classes: list[ast.ClassDef] = []
         functions: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
         imports: list[str] = []
+        import_lines: dict[str, int] = {}  # import spec → 0-based line of the import statement
         top_assignments: list[str] = []
 
         for node in ast.iter_child_nodes(tree):
@@ -242,10 +245,13 @@ class PythonHandler:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     imports.append(alias.name)
+                    import_lines.setdefault(alias.name, (node.lineno or 1) - 1)
             elif isinstance(node, ast.ImportFrom):
                 module = node.module or ""
                 for alias in node.names:
-                    imports.append(f"{module}.{alias.name}")
+                    spec = f"{module}.{alias.name}"
+                    imports.append(spec)
+                    import_lines.setdefault(spec, (node.lineno or 1) - 1)
             elif isinstance(node, ast.Assign):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
@@ -300,7 +306,7 @@ class PythonHandler:
             f"\n"
             f"  Depth: {len(export_names)} exports, {len(private_constants)} private constants, {total_loc} LOC"
         )
-        entities.append(RawEntity(name=module_name, kind="module", description=module_desc))
+        entities.append(RawEntity(name=module_name, kind="module", description=module_desc, def_line=0))
 
         for imp in imports:
             relationships.append(RawRelationship(
@@ -308,6 +314,7 @@ class PythonHandler:
                 target_name=imp,
                 kind="imports",
                 description=f"{module_name} imports {imp}",
+                source_line=import_lines.get(imp),
             ))
 
         # ── Class entities ───────────────────────────────────────────
@@ -329,13 +336,28 @@ class PythonHandler:
                     kind="inherits",
                     description=f"{cls.name} inherits from {base_name}",
                 ))
-            # Calls attribute to the class: methods are not standalone entities, so a
-            # method body's calls hang off the enclosing class node.
-            for callee in sorted(_calls_in(cls)):
+            # Methods are first-class entities (`Class.method`). The class `contains` each,
+            # and each method body's calls hang off the METHOD node — so call edges land on a
+            # real code target instead of falling through to a same-named doc entity (ADR-0017).
+            for m in _methods_of(cls):
+                qual = f"{cls.name}.{m.name}"
+                entities.append(_extract_method(m, cls.name, rel_path))
+                relationships.append(RawRelationship(
+                    source_name=cls.name, target_name=qual,
+                    kind="contains", description=f"{cls.name} contains {qual}",
+                ))
+                for callee, ln in sorted(_calls_in(m).items()):
+                    if callee != m.name:
+                        relationships.append(RawRelationship(
+                            source_name=qual, target_name=callee,
+                            kind="calls", description=f"{qual} calls {callee}", source_line=ln,
+                        ))
+            # Class-body-level calls (decorators, class-scope assignments) stay on the class.
+            for callee, ln in sorted(_class_level_calls(cls).items()):
                 if callee != cls.name:
                     relationships.append(RawRelationship(
                         source_name=cls.name, target_name=callee,
-                        kind="calls", description=f"{cls.name} calls {callee}",
+                        kind="calls", description=f"{cls.name} calls {callee}", source_line=ln,
                     ))
 
         # ── Function entities ────────────────────────────────────────
@@ -347,11 +369,11 @@ class PythonHandler:
                 kind="contains",
                 description=f"{module_name} contains {func.name}",
             ))
-            for callee in sorted(_calls_in(func)):
+            for callee, ln in sorted(_calls_in(func).items()):
                 if callee != func.name:
                     relationships.append(RawRelationship(
                         source_name=func.name, target_name=callee,
-                        kind="calls", description=f"{func.name} calls {callee}",
+                        kind="calls", description=f"{func.name} calls {callee}", source_line=ln,
                     ))
 
         return entities, relationships
@@ -434,7 +456,7 @@ def _extract_class(cls: ast.ClassDef, rel_path: str) -> RawEntity:
         f"  Bases: {bases_str}"
     )
 
-    return RawEntity(name=cls.name, kind="class", description=desc)
+    return RawEntity(name=cls.name, kind="class", description=desc, def_line=(cls.lineno or 1) - 1)
 
 
 def _extract_function(func: ast.FunctionDef | ast.AsyncFunctionDef, rel_path: str) -> RawEntity:
@@ -451,25 +473,74 @@ def _extract_function(func: ast.FunctionDef | ast.AsyncFunctionDef, rel_path: st
         f"  Depth: {func_loc} LOC"
     )
 
-    return RawEntity(name=func.name, kind="function", description=desc)
+    return RawEntity(name=func.name, kind="function", description=desc, def_line=(func.lineno or 1) - 1)
 
 
-def _calls_in(node: ast.AST) -> set[str]:
-    """Callee names invoked anywhere in this subtree (`ast.Name` → id, `ast.Attribute` → attr).
+def _methods_of(cls: ast.ClassDef) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Direct method defs of a class (not nested functions). Order-preserving."""
+    return [n for n in ast.iter_child_nodes(cls)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+
+
+def _extract_method(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, class_name: str, rel_path: str
+) -> RawEntity:
+    """A method as a first-class entity, named `Class.method` so it never collides with a
+    same-named method on another class (the qualified (name, source_file) is unique). Kind is
+    `function` — the base ontology defines that as "a top-level function or method" (ADR-0024).
+    The bare leaf (`method`) is how call sites name it; the resolver's leaf index binds those."""
+    sig = _signature(func)
+    visibility = "private" if _is_private(func.name) else "public"
+    func_loc = _loc(func)
+    docstring = ast.get_docstring(func) or ""
+
+    desc = f"Method: {class_name}.{sig}\n  File: {rel_path}\n"
+    if docstring:
+        desc += f"  Docstring: {docstring!r}\n"
+    desc += (
+        f"  Visibility: {visibility}\n"
+        f"  Depth: {func_loc} LOC"
+    )
+
+    return RawEntity(
+        name=f"{class_name}.{func.name}", kind="function", description=desc, def_line=(func.lineno or 1) - 1,
+    )
+
+
+def _class_level_calls(cls: ast.ClassDef) -> dict[str, int]:
+    """Calls in the class body OUTSIDE any method (decorators, class-level assignments).
+    Method-body calls are attributed to the method node instead — so a class no longer
+    absorbs every callee its methods touch (the receiver-loss over-linking is now per-method)."""
+    out: dict[str, int] = {}
+    for child in ast.iter_child_nodes(cls):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for callee, line in _calls_in(child).items():
+            if callee not in out or line < out[callee]:
+                out[callee] = line
+    return out
+
+
+def _calls_in(node: ast.AST) -> dict[str, int]:
+    """Callee names invoked in this subtree → the 0-based line of their FIRST call site
+    (`ast.Name` → id, `ast.Attribute` → attr).
 
     Method-name granularity: `self.foo()` and `obj.foo()` both yield `foo` — the receiver is
     lost, so this over-links to any same-named callee. Unresolvable callees (stdlib, externals,
     locals) are dropped downstream by the EntityResolver, and ambiguous names never guess a
-    target (ADR-0017) — so the surviving edges are the intra-portfolio, unambiguous calls.
+    target (ADR-0017) — so the surviving edges are the intra-portfolio, unambiguous calls. The
+    line lets a `calls` edge anchor to the exact call site in the source panel.
     """
-    out: set[str] = set()
+    out: dict[str, int] = {}
     for n in ast.walk(node):
         if isinstance(n, ast.Call):
             fn = n.func
-            if isinstance(fn, ast.Name):
-                out.add(fn.id)
-            elif isinstance(fn, ast.Attribute):
-                out.add(fn.attr)
+            name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else None)
+            if name is None:
+                continue
+            line = (getattr(n, "lineno", 1) or 1) - 1
+            if name not in out or line < out[name]:
+                out[name] = line
     return out
 
 
@@ -498,17 +569,19 @@ def _ts_loc(node: Node) -> int:
     return node.end_point[0] - node.start_point[0] + 1
 
 
-def _ts_calls_in(node: Node) -> set[str]:
-    """Callee names invoked within this subtree. `foo()` yields `foo`; `obj.foo()` and
-    `this.foo()` yield the property `foo` (receiver lost — same caveat as the Python walker)."""
-    out: set[str] = set()
+def _ts_calls_in(node: Node) -> dict[str, int]:
+    """Callee names invoked within this subtree → the 0-based line of their first call site.
+    `foo()` yields `foo`; `obj.foo()` and `this.foo()` yield the property `foo` (receiver lost
+    — same caveat as the Python walker)."""
+    out: dict[str, int] = {}
     stack = [node]
     while stack:
         n = stack.pop()
         if n.type == "call_expression":
+            name: str | None = None
             for c in n.children:
                 if c.type == "identifier":
-                    out.add(_ts_node_text(c))
+                    name = _ts_node_text(c)
                     break
                 if c.type == "member_expression":
                     prop = None
@@ -516,8 +589,12 @@ def _ts_calls_in(node: Node) -> set[str]:
                         if mc.type in ("property_identifier", "identifier"):
                             prop = mc
                     if prop is not None:
-                        out.add(_ts_node_text(prop))
+                        name = _ts_node_text(prop)
                     break
+            if name is not None:
+                line = n.start_point[0]
+                if name not in out or line < out[name]:
+                    out[name] = line
         stack.extend(n.children)
     return out
 
@@ -645,7 +722,63 @@ def _ts_extract_class_like(node: Node, kind_label: str, rel_path: str) -> RawEnt
         f"  Bases: {bases_str}"
     )
 
-    return RawEntity(name=name, kind="class", description=desc)
+    return RawEntity(name=name, kind="class", description=desc, def_line=node.start_point[0])
+
+
+def _ts_class_body(node: Node) -> Node | None:
+    return (
+        _ts_find_child(node, "class_body")
+        or _ts_find_child(node, "interface_body")
+        or _ts_find_child(node, "enum_body")
+    )
+
+
+def _ts_methods_of(node: Node) -> list[tuple[str, Node]]:
+    """(method_name, method_node) for each method definition in a class body. Order-preserving."""
+    body = _ts_class_body(node)
+    if not body:
+        return []
+    out: list[tuple[str, Node]] = []
+    for member in body.children:
+        if member.type in ("method_definition", "method_signature"):
+            name_node = _ts_find_child(member, "property_identifier") or _ts_find_child(member, "identifier")
+            if name_node:
+                out.append((_ts_node_text(name_node), member))
+    return out
+
+
+def _ts_extract_method(node: Node, class_name: str, rel_path: str) -> RawEntity:
+    """A TS/JS method as a first-class `Class.method` entity (mirror of `_extract_method`)."""
+    sig = _ts_method_signature(node)
+    visibility = "private" if _ts_is_private_member(node) else "public"
+    method_loc = _ts_loc(node)
+    name_node = _ts_find_child(node, "property_identifier") or _ts_find_child(node, "identifier")
+    mname = _ts_node_text(name_node) if name_node else "?"
+    desc = (
+        f"Method: {class_name}.{sig}\n"
+        f"  File: {rel_path}\n"
+        f"  Visibility: {visibility}\n"
+        f"  Depth: {method_loc} LOC"
+    )
+    return RawEntity(
+        name=f"{class_name}.{mname}", kind="function", description=desc, def_line=node.start_point[0],
+    )
+
+
+def _ts_class_level_calls(node: Node) -> dict[str, int]:
+    """Calls in the class body OUTSIDE any method (field initializers, decorators) — method-body
+    calls attribute to the method node instead (mirror of `_class_level_calls`)."""
+    body = _ts_class_body(node)
+    if not body:
+        return {}
+    out: dict[str, int] = {}
+    for member in body.children:
+        if member.type in ("method_definition", "method_signature"):
+            continue
+        for callee, line in _ts_calls_in(member).items():
+            if callee not in out or line < out[callee]:
+                out[callee] = line
+    return out
 
 
 def _ts_extract_function(name: str, node: Node, rel_path: str, *, exported: bool) -> RawEntity:
@@ -659,7 +792,7 @@ def _ts_extract_function(name: str, node: Node, rel_path: str, *, exported: bool
         f"  Visibility: {visibility}\n"
         f"  Depth: {func_loc} LOC"
     )
-    return RawEntity(name=name, kind="function", description=desc)
+    return RawEntity(name=name, kind="function", description=desc, def_line=node.start_point[0])
 
 
 def _ts_extract_arrow_function(name: str, node: Node, rel_path: str, *, exported: bool) -> RawEntity:
@@ -677,7 +810,7 @@ def _ts_extract_arrow_function(name: str, node: Node, rel_path: str, *, exported
         f"  Visibility: {visibility}\n"
         f"  Depth: {func_loc} LOC"
     )
-    return RawEntity(name=name, kind="function", description=desc)
+    return RawEntity(name=name, kind="function", description=desc, def_line=node.start_point[0])
 
 
 class TypeScriptHandler:
@@ -725,7 +858,12 @@ class TypeScriptHandler:
         exported_names: list[str] = []
         private_names: list[str] = []
         imports: list[str] = []
+        import_lines: dict[str, int] = {}  # import spec → 0-based line of the import statement
         type_aliases: list[str] = []
+
+        def _add_import(spec: str, line: int) -> None:
+            imports.append(spec)
+            import_lines.setdefault(spec, line)
 
         class_like_types = {"class_declaration", "abstract_class_declaration"}
         interface_types = {"interface_declaration"}
@@ -751,6 +889,7 @@ class TypeScriptHandler:
                 if source_node:
                     frag = _ts_find_child(source_node, "string_fragment")
                     module_path = _ts_node_text(frag) if frag else _ts_node_text(source_node).strip("'\"")
+                    il = node.start_point[0]
                     clause = _ts_find_child(node, "import_clause")
                     if clause:
                         named = _ts_find_child(clause, "named_imports")
@@ -759,15 +898,15 @@ class TypeScriptHandler:
                                 if spec.type == "import_specifier":
                                     spec_name = _ts_find_child(spec, "identifier")
                                     if spec_name:
-                                        imports.append(f"{module_path}.{_ts_node_text(spec_name)}")
+                                        _add_import(f"{module_path}.{_ts_node_text(spec_name)}", il)
                         ns = _ts_find_child(clause, "namespace_import")
                         if ns:
-                            imports.append(module_path)
+                            _add_import(module_path, il)
                         ident = _ts_find_child(clause, "identifier")
                         if ident and not named and not ns:
-                            imports.append(module_path)
+                            _add_import(module_path, il)
                     else:
-                        imports.append(module_path)
+                        _add_import(module_path, il)
                 continue
 
             if node.type == "expression_statement":
@@ -780,14 +919,33 @@ class TypeScriptHandler:
                             s = _ts_find_child(args, "string")
                             if s:
                                 frag = _ts_find_child(s, "string_fragment")
-                                imports.append(_ts_node_text(frag) if frag else _ts_node_text(s).strip("'\""))
+                                _add_import(
+                                    _ts_node_text(frag) if frag else _ts_node_text(s).strip("'\""),
+                                    node.start_point[0],
+                                )
                 continue
 
             if inner.type in class_like_types:
                 kind_label = "Class"
                 ent = _ts_extract_class_like(inner, kind_label, rel_path)
                 entities.append(ent)
-                callable_scopes.append((ent.name, inner))
+                # Methods are first-class `Class.method` entities; the class `contains` each and
+                # each method body's calls hang off the METHOD scope. Class-body-level calls
+                # (field initializers, decorators) stay on the class (mirror of PythonHandler).
+                for mname, mnode in _ts_methods_of(inner):
+                    qual = f"{ent.name}.{mname}"
+                    entities.append(_ts_extract_method(mnode, ent.name, rel_path))
+                    relationships.append(RawRelationship(
+                        source_name=ent.name, target_name=qual,
+                        kind="contains", description=f"{ent.name} contains {qual}",
+                    ))
+                    callable_scopes.append((qual, mnode))
+                for callee, ln in sorted(_ts_class_level_calls(inner).items()):
+                    if callee != ent.name:
+                        relationships.append(RawRelationship(
+                            source_name=ent.name, target_name=callee,
+                            kind="calls", description=f"{ent.name} calls {callee}", source_line=ln,
+                        ))
                 if is_exported:
                     exported_names.append(ent.name)
                 else:
@@ -891,6 +1049,7 @@ class TypeScriptHandler:
             relationships.append(RawRelationship(
                 source_name=module_name, target_name=imp,
                 kind="imports", description=f"{module_name} imports {imp}",
+                source_line=import_lines.get(imp),
             ))
 
         # Deduplicate export/private lists
@@ -923,13 +1082,14 @@ class TypeScriptHandler:
             f"\n"
             f"  Depth: {len(exported_names)} exports, {len(non_entity_private)} private, {total_loc} LOC"
         )
-        entities.insert(0, RawEntity(name=module_name, kind="module", description=module_desc))
+        entities.insert(0, RawEntity(name=module_name, kind="module", description=module_desc, def_line=0))
 
         # Containment anchor→member (ADR-0021), uniform with PythonHandler/TerraformHandler.
         # Skip the eponymous case (e.g. Foo.ts → `class Foo`) where the member shares the
         # module's (name, source_file) and would resolve to the anchor itself (sid == tid).
+        # Skip methods (qualified `Class.method`) — those are `contains`ed by their class above.
         for ent in entities:
-            if ent.kind != "module" and ent.name != module_name:
+            if ent.kind != "module" and ent.name != module_name and "." not in ent.name:
                 relationships.append(RawRelationship(
                     source_name=module_name,
                     target_name=ent.name,
@@ -940,11 +1100,11 @@ class TypeScriptHandler:
         # Calls (caller→callee), sorted for deterministic graph_commit. Methods/nested
         # bodies attribute to their enclosing class/function entity.
         for cname, cnode in callable_scopes:
-            for callee in sorted(_ts_calls_in(cnode)):
+            for callee, ln in sorted(_ts_calls_in(cnode).items()):
                 if callee != cname:
                     relationships.append(RawRelationship(
                         source_name=cname, target_name=callee,
-                        kind="calls", description=f"{cname} calls {callee}",
+                        kind="calls", description=f"{cname} calls {callee}", source_line=ln,
                     ))
 
         return entities, relationships

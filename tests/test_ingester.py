@@ -191,11 +191,16 @@ class TestPythonHandlerExtract:
             "        helper()\n"
         )
         h = PythonHandler()
-        _, rels = h.extract(f)
+        ents, rels = h.extract(f)
         calls = {(r.source_name, r.target_name) for r in rels if r.kind == "calls"}
-        assert ("run", "tool") in calls       # function → function
-        assert ("Agent", "helper") in calls    # method body attributes to the class
-        assert ("run", "run") not in calls     # self-recursion skipped
+        contains = {(r.source_name, r.target_name) for r in rels if r.kind == "contains"}
+        names = {e.name for e in ents}
+        assert ("run", "tool") in calls          # function → function
+        assert "Agent.step" in names             # method is a first-class entity
+        assert ("Agent", "Agent.step") in contains   # class contains its method
+        assert ("Agent.step", "helper") in calls     # method body calls attribute to the METHOD
+        assert ("Agent", "helper") not in calls      # ...not to the enclosing class
+        assert ("run", "run") not in calls       # self-recursion skipped
 
     def test_protocol_base_detection(self, tmp_path):
         f = tmp_path / "proto.py"
@@ -367,6 +372,26 @@ class TestTypeScriptHandlerExtract:
         calls = {(r.source_name, r.target_name) for r in rels if r.kind == "calls"}
         assert ("run", "tool") in calls       # bare call → identifier
         assert ("run", "helper") in calls      # member call → property name
+
+    def test_methods_are_first_class_entities(self, tmp_path):
+        f = tmp_path / "svc.ts"
+        f.write_text(
+            "export class Agent {\n"
+            "    step(): void {\n"
+            "        helper();\n"
+            "    }\n"
+            "}\n"
+        )
+        h = TypeScriptHandler()
+        ents, rels = h.extract(f)
+        names = {e.name for e in ents}
+        calls = {(r.source_name, r.target_name) for r in rels if r.kind == "calls"}
+        contains = {(r.source_name, r.target_name) for r in rels if r.kind == "contains"}
+        assert "Agent.step" in names                 # method is its own entity
+        assert ("Agent", "Agent.step") in contains   # class contains its method
+        assert ("Agent.step", "helper") in calls     # method body calls attribute to the METHOD
+        assert ("Agent", "helper") not in calls      # ...not the class
+        assert ("svc", "Agent.step") not in contains # module does NOT contain the method
 
     def test_class_depth_metrics(self, tmp_path):
         f = tmp_path / "deep.ts"
