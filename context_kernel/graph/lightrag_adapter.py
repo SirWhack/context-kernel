@@ -72,6 +72,7 @@ class LightRAGStore(KnowledgeStore):
                 source_tier=e.get("source_tier", 0.0),
                 centrality=e.get("centrality", 0.0),
                 confidence=e.get("confidence", 1.0),
+                def_line=e.get("def_line"),
             )
             for e in raw.get("entities", [])
         }
@@ -80,6 +81,7 @@ class LightRAGStore(KnowledgeStore):
                 source_id=r["source_id"], target_id=r["target_id"], kind=r["kind"], description=r["description"],
                 weight=r.get("weight", 0.5),
                 drift=r.get("drift", 0.0),
+                source_line=r.get("source_line"),
             )
             for r in raw.get("relationships", [])
         ]
@@ -120,12 +122,13 @@ class LightRAGStore(KnowledgeStore):
             "entities": [
                 {"id": e.id, "name": e.name, "kind": e.kind, "description": e.description,
                  "aliases": list(e.aliases), "sources": list(e.sources), "kinds": list(e.kinds),
-                 "source_tier": e.source_tier, "centrality": e.centrality, "confidence": e.confidence}
+                 "source_tier": e.source_tier, "centrality": e.centrality, "confidence": e.confidence,
+                 "def_line": e.def_line}
                 for e in self._entities.values()
             ],
             "relationships": [
                 {"source_id": r.source_id, "target_id": r.target_id, "kind": r.kind, "description": r.description,
-                 "weight": r.weight, "drift": r.drift}
+                 "weight": r.weight, "drift": r.drift, "source_line": r.source_line}
                 for r in self._relationships
             ],
             "summaries": [

@@ -22,7 +22,7 @@ from pathlib import PurePosixPath
 from context_kernel.config_store import Config
 from context_kernel.graph.protocol import Entity, KnowledgeStore
 
-SCHEMA_VERSION = 2  # v2: added containment spine (node.scope/parent, file.anchor_id/scope)
+SCHEMA_VERSION = 3  # v3: line-anchored edges (node.def_line, edge.sourceLine/targetLine)
 # Scope key under which `_apply_concept_layer` files the global ontology concept hubs.
 _CONCEPT_SCOPE = "."
 
@@ -154,6 +154,7 @@ def build_graph_export(
             "confidence": e.confidence,
             "centrality": e.centrality,
             "source_tier": e.source_tier,
+            "def_line": e.def_line,
             "description": e.description,
         }
         for e in entities.values()
@@ -205,6 +206,11 @@ def build_graph_export(
                 "weight": rel.weight,
                 "drift": rel.drift,
                 "cross_repo": cross_repo,
+                # Line anchors: the call/import site in the source, and the target's definition
+                # line (so an edge lands on the exact line in each code panel). None → the
+                # webview falls back to a node-level handle.
+                "sourceLine": rel.source_line,
+                "targetLine": entities[rel.target_id].def_line,
             }
         )
 

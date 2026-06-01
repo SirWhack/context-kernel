@@ -35,6 +35,7 @@ class Entity:
     source_tier: float = 0.0      # max authority over `sources` (0 = unscored)
     centrality: float = 0.0       # distinct-source in-degree, normalized; never folded into confidence
     confidence: float = 1.0       # authority × (1 − node_drift); 1.0 = fully trusted / unscored
+    def_line: int | None = None   # 0-based start line of the code definition (for line-anchored edges)
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class Relationship:
     # edge's directional staleness (referent→claimant), loaded on the claimant end.
     weight: float = 0.5           # edge_weight(kind); 0.5 = unknown-kind mid weight
     drift: float = 0.0            # normalized churn to the referent since the claimant last changed
+    source_line: int | None = None  # 0-based line of the call/import site in the source file
 
 
 @dataclass(frozen=True)

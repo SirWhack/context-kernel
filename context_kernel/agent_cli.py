@@ -269,8 +269,8 @@ def _cmd_graph(args: argparse.Namespace, config) -> None:
 # Fields the visualizer never reads — dropping them ~halves the payload (descriptions and the
 # sha256 ids dominate). `description`/`sources` carry the bulk; edge policy fields go too.
 def _slim_graph(data: dict) -> dict:
-    _NODE_DROP = ("description", "sources", "centrality", "source_tier")
-    _EDGE_DROP = ("weight", "drift", "kind")
+    _NODE_DROP = ("description", "centrality", "source_tier")  # keep `sources` for code panels
+    _EDGE_DROP = ("weight", "drift")  # keep `kind` for call-flow layout + edge styling
     return {
         **data,
         "nodes": [{k: v for k, v in n.items() if k not in _NODE_DROP} for n in data["nodes"]],
