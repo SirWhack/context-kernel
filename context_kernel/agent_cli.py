@@ -150,13 +150,17 @@ def _cmd_ingest(args: argparse.Namespace, config) -> str:
     summarizer_key = _resolve_api_key(config.ingester.summarizer_api_key_env)
     embedder_key = _resolve_api_key(config.ingester.embedder_api_key_env)
 
+    from context_kernel.ontology import load_ontology as load_ontology_yaml
+
     embedder = _build_embedder(config, embedder_key, metrics)
+    ontology = load_ontology_yaml(portfolio)
     summarizer = LLMSummarizer(
         endpoint=config.ingester.summarizer_endpoint,
         model=config.ingester.summarizer_model,
         cache_dir=portfolio / ".context-kernel" / "cache",
         api_key=summarizer_key,
         metrics=metrics,
+        ontology=ontology,
     )
     projects = [
         (project.path, None if project.path == Path(".") else project.name)

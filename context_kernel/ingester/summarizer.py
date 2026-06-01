@@ -16,58 +16,58 @@ from context_kernel.ingester._http import build_client, post_with_retry
 from context_kernel.ingester.handlers import RawEntity, RawRelationship
 
 if TYPE_CHECKING:
+    from context_kernel.ontology import Ontology
     from context_kernel.types import LLMMetrics
 
 log = logging.getLogger(__name__)
 
-_CACHE_VERSION = "v4"  # bumped: semantic implements→realizes (ADR-0021) changes the prompt
+_CACHE_VERSION = "v5"  # bumped: prompt + kinds now derive from ontology.yaml (ADR-0024)
 
-# Entity kinds the LLM is instructed to extract from documentation.
-# See ADR-0013 for rationale on why these 8 and what was cut.
-ENTITY_KINDS = frozenset({
-    "decision",
-    "constraint",
-    "invariant",
-    "trade-off",
-    "risk",
-    "workflow",
-    "interface",
-    "open-question",
-    "stale-claim",  # ADR-0013 / ADR-0016: doc claim contradicting a known code entity (issue #4)
-})
+# Default kind tables — the fallback when no ontology.yaml is present (ADR-0024 §4).
+# The ontology, when found, supplies these instead; these stay as the never-fail floor.
+# Definitions here are the source of the prompt bullets — keep them byte-for-byte in
+# sync with ontology.yaml's semantic-kind definitions (the tuned ADR-0013 text).
+_DEFAULT_ENTITY_KINDS: tuple[tuple[str, str], ...] = (
+    ("decision", "A resolved choice with rationale. Includes non-goals (decisions NOT to do something)."),
+    ("constraint", "An externally imposed boundary (platform, resource, timeline). Not chosen — inherited."),
+    ("invariant", "A property the system must always maintain. Internally chosen."),
+    ("trade-off", "An explicit tension between competing qualities."),
+    ("risk", "An identified threat to success, with potential impact."),
+    ("workflow", "A sequenced process or pipeline."),
+    ("interface", "A contract boundary — API surface, protocol, schema, integration point."),
+    ("open-question", "An unresolved issue requiring future decision."),
+)
+# `stale-claim` is a valid kind but special-cased in the Rules section, not a bullet
+# (ADR-0013 / ADR-0016: doc claim contradicting a known code entity, issue #4).
+ENTITY_KINDS = frozenset({name for name, _ in _DEFAULT_ENTITY_KINDS} | {"stale-claim"})
 
 # Relationship kinds for doc-to-doc and doc-to-code edges.
 # These are the *semantic* (LLM-inferred) family per ADR-0021 — pure relationship verbs
 # with zero overlap against code keywords. Structural `implements`/`inherits`/`imports`
 # are emitted only by the parser handlers, never by the extractor.
-RELATIONSHIP_KINDS = frozenset({
-    "realizes",
-    "governed-by",
-    "motivates",
-    "supersedes",
-    "addresses",
-})
+_DEFAULT_RELATIONSHIP_KINDS: tuple[tuple[str, str], ...] = (
+    ("realizes", "A code entity realizes a doc entity (e.g., a class realizes a decision or invariant)."),
+    ("governed-by", "Code or design is constrained by a rule (invariant, constraint)."),
+    ("motivates", "One entity is the reason another exists."),
+    ("supersedes", "One decision replaces another."),
+    ("addresses", "A decision resolves an open question."),
+)
+RELATIONSHIP_KINDS = frozenset({name for name, _ in _DEFAULT_RELATIONSHIP_KINDS})
 
-_SYSTEM_PROMPT = """\
+# The prompt scaffolding (Rules + Output format) is fixed; only the kind bullets vary,
+# so the same prompt can be rebuilt from any vocabulary (ADR-0024). `.format()` is avoided
+# because the Output-format example contains literal `{` JSON braces.
+_PROMPT_HEAD = """\
 You are an entity extractor for a software documentation knowledge graph.
 Given a chunk of technical documentation, extract entities and relationships.
 
 ## Entity kinds (use ONLY these)
-- decision: A resolved choice with rationale. Includes non-goals (decisions NOT to do something).
-- constraint: An externally imposed boundary (platform, resource, timeline). Not chosen — inherited.
-- invariant: A property the system must always maintain. Internally chosen.
-- trade-off: An explicit tension between competing qualities.
-- risk: An identified threat to success, with potential impact.
-- workflow: A sequenced process or pipeline.
-- interface: A contract boundary — API surface, protocol, schema, integration point.
-- open-question: An unresolved issue requiring future decision.
+"""
+_PROMPT_MID = """
 
 ## Relationship kinds (use ONLY these)
-- realizes: A code entity realizes a doc entity (e.g., a class realizes a decision or invariant).
-- governed-by: Code or design is constrained by a rule (invariant, constraint).
-- motivates: One entity is the reason another exists.
-- supersedes: One decision replaces another.
-- addresses: A decision resolves an open question.
+"""
+_PROMPT_TAIL = """
 
 ## Rules
 - Extract 1-8 entities per chunk. Prefer fewer, higher-quality entities over many vague ones.
@@ -91,6 +91,21 @@ Return ONLY valid JSON, no markdown fences, no commentary:
 
 If the chunk contains no extractable entities, return: {"entities": [], "relationships": []}
 """
+
+
+def build_system_prompt(entity_bullets: str, relationship_bullets: str) -> str:
+    """Assemble the extraction prompt from kind bullets and the fixed scaffolding."""
+    return _PROMPT_HEAD + entity_bullets + _PROMPT_MID + relationship_bullets + _PROMPT_TAIL
+
+
+def _default_bullets(kinds: tuple[tuple[str, str], ...]) -> str:
+    return "\n".join(f"- {name}: {definition}" for name, definition in kinds)
+
+
+_SYSTEM_PROMPT = build_system_prompt(
+    _default_bullets(_DEFAULT_ENTITY_KINDS),
+    _default_bullets(_DEFAULT_RELATIONSHIP_KINDS),
+)
 
 
 class Summarizer(Protocol):
@@ -167,10 +182,12 @@ that helps an agent or engineer understand:
 """
 
 
-def _cache_key(text: str, model: str, context: str = "") -> str:
+def _cache_key(text: str, model: str, context: str = "", ontology: str = "") -> str:
     # context is part of the prompt (ADR-0016), so it must key the cache: changing the
     # known-code-entity prefix must invalidate doc extractions that depended on it.
-    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{context}:{text}".encode()).hexdigest()
+    # The ontology hash is likewise part of the prompt now (ADR-0024) — a vocabulary edit
+    # must re-extract — so it keys the cache too.
+    return hashlib.sha256(f"{_CACHE_VERSION}:{model}:{ontology}:{context}:{text}".encode()).hexdigest()
 
 
 class LLMSummarizer:
@@ -188,6 +205,7 @@ class LLMSummarizer:
         *,
         api_key: str | None = None,
         metrics: "LLMMetrics | None" = None,
+        ontology: "Ontology | None" = None,
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._model = model
@@ -195,6 +213,21 @@ class LLMSummarizer:
         self._api_key = api_key
         self._metrics = metrics
         self._client = build_client(timeout=120.0)
+        # Vocabulary: derive the prompt + validation kinds from the ontology when present,
+        # else fall back to the hardcoded defaults (ADR-0024 §4). The ontology hash keys the
+        # cache, so a vocabulary edit forces re-extraction.
+        if ontology is not None:
+            self._system_prompt = build_system_prompt(
+                ontology.entity_bullets(), ontology.relationship_bullets()
+            )
+            self._entity_kinds = ontology.entity_kinds()
+            self._relationship_kinds = ontology.relationship_kinds()
+            self._ontology_hash = ontology.content_hash
+        else:
+            self._system_prompt = _SYSTEM_PROMPT
+            self._entity_kinds = ENTITY_KINDS
+            self._relationship_kinds = RELATIONSHIP_KINDS
+            self._ontology_hash = ""
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._cache_hits = 0
@@ -206,7 +239,7 @@ class LLMSummarizer:
         return self._cache_dir / f"{key}.json"
 
     def _read_cache(self, text: str, context: str = "") -> tuple[list[RawEntity], list[RawRelationship]] | None:
-        path = self._cache_path(_cache_key(text, self._model, context))
+        path = self._cache_path(_cache_key(text, self._model, context, self._ontology_hash))
         if path is None or not path.exists():
             return None
         try:
@@ -218,7 +251,7 @@ class LLMSummarizer:
             return None
 
     def _write_cache(self, text: str, entities: list[RawEntity], relationships: list[RawRelationship], context: str = "") -> None:
-        path = self._cache_path(_cache_key(text, self._model, context))
+        path = self._cache_path(_cache_key(text, self._model, context, self._ontology_hash))
         if path is None:
             return
         data = {
@@ -306,7 +339,7 @@ class LLMSummarizer:
         # ADR-0016: prepend the run-constant context (known code entities, vocabulary,
         # source metadata) so the LLM references real identifiers and canonical terms.
         user = f"{context}\n\n## Chunk to extract from\n{text}" if context else text
-        content = self._chat(_SYSTEM_PROMPT, user)
+        content = self._chat(self._system_prompt, user)
         if content is None:
             return [], []
 

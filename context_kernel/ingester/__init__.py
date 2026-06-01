@@ -16,6 +16,7 @@ from context_kernel.graph.protocol import EmbeddedChunk, Entity, KnowledgeStore,
 from context_kernel.ingester.blobs import write_embedding, write_summary
 from context_kernel.change_detection import walk_source_files
 from context_kernel.ingester.concepts import ground_entity_concepts, load_ontology
+from context_kernel.ontology import is_ontology_file
 from context_kernel.ingester.entity_resolver import (
     CODE_EXT, ExtractedEntity, ExtractedRelationship, resolve as resolve_entities,
 )
@@ -426,6 +427,10 @@ def ingest(
     structured_files: list[tuple[Path, str, StructuredHandler]] = []
     chunk_files: list[tuple[Path, str, ChunkHandler]] = []
     for file_path in all_files:
+        # The ontology is declarative input (it shapes the prompt) — hashed into the
+        # commit via walk_source_files but never extracted as content (ADR-0024).
+        if is_ontology_file(file_path):
+            continue
         rel_path = str(file_path.relative_to(sources_root))
         handler = next((h for h in _STRUCTURED if h.supports(file_path)), None)
         if handler:

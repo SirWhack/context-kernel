@@ -1,0 +1,146 @@
+# ontology.yaml — the Context Kernel type system (ADR-0024).
+#
+# Single source of truth for the VOCABULARY (node + edge kinds), with POLICY
+# (weights/tiers) and PROJECTION (path→tier rules) as adjacent, separately-consumed
+# layers. This file IS the documentation of the kind system; edit here, and the
+# extraction prompt + validation regenerate from it.
+#
+# `family` encodes epistemics AND the open/closed posture (ADR-0024 §1):
+#   structural — parser-derived, literal, CLOSED. The LLM never emits these.
+#   semantic   — LLM-inferred, ADVISORY. Each `definition` is injected into the
+#                extraction prompt; undeclared kinds the model surfaces are retained
+#                (not rejected) but fall to the default weight.
+#   concept    — deterministic alias grounding, CLOSED.
+#
+# `weight` / `centrality` (edges only) are POLICY annotations on the term. They are
+# the kernel DEFAULTS; per-repo / per-sweep overrides still live in config.toml
+# `[ingester.scoring]` + CK_SCORING_* and win on top (ADR-0015 / ADR-0022).
+#
+# Phase 1 (ADR-0024) wires only the vocabulary (nodes/edges → prompt + validation).
+# `policy:` and `projection:` are loaded but not yet authoritative — scoring.py /
+# source_kinds.py still own them until Phases 2–3.
+
+version: 1
+
+nodes:
+  # ── structural (closed) — emitted by AST / tree-sitter / IaC handlers ──────
+  - {kind: module,      family: structural, definition: A source file as a container of definitions.}
+  - {kind: class,       family: structural, definition: A class, interface, enum, or equivalent type definition.}
+  - {kind: function,    family: structural, definition: A top-level function or method.}
+  - {kind: variable,    family: structural, definition: A module-level constant or variable binding.}
+  - {kind: resource,    family: structural, definition: An infrastructure resource declaration (e.g. aws_s3_bucket).}
+  - {kind: data,        family: structural, definition: An infrastructure data-source lookup.}
+  - {kind: output,      family: structural, definition: An exported value from a module.}
+  - {kind: module_call, family: structural, definition: An invocation of another module.}
+  - {kind: provider,    family: structural, definition: A provider configuration block.}
+  - {kind: local,       family: structural, definition: A locally-scoped computed value.}
+
+  # ── semantic (advisory) — these definitions become the prompt's entity bullets ──
+  # Definitions are the tuned ADR-0013 prompt text verbatim; edit with care.
+  - kind: decision
+    family: semantic
+    definition: A resolved choice with rationale. Includes non-goals (decisions NOT to do something).
+  - kind: constraint
+    family: semantic
+    definition: An externally imposed boundary (platform, resource, timeline). Not chosen — inherited.
+  - kind: invariant
+    family: semantic
+    definition: A property the system must always maintain. Internally chosen.
+  - kind: trade-off
+    family: semantic
+    definition: An explicit tension between competing qualities.
+  - kind: risk
+    family: semantic
+    definition: An identified threat to success, with potential impact.
+  - kind: workflow
+    family: semantic
+    definition: A sequenced process or pipeline.
+  - kind: interface
+    family: semantic
+    definition: A contract boundary — API surface, protocol, schema, integration point.
+  - kind: open-question
+    family: semantic
+    definition: An unresolved issue requiring future decision.
+  # Valid kind, but special-cased in the prompt's Rules (not a primary bullet) — ADR-0016.
+  - kind: stale-claim
+    family: semantic
+    prompt: false
+    definition: A doc claim that contradicts a known code entity (says something is missing/unbuilt that the code shows exists).
+
+  # ── concept (deterministic grounding) ──────────────────────────────────────
+  - {kind: concept, family: concept, definition: A curated hub node grounding a topic to code anchors via alias match.}
+
+edges:
+  # ── structural (closed; parser-derived). weight/centrality = policy annotations. ──
+  - {kind: implements, family: structural, weight: 0.9, centrality: true,  definition: "Code literally defines/implements a type (e.g. class Foo implements Bar)."}
+  - {kind: inherits,   family: structural, weight: 0.9, centrality: true,  definition: A type inherits from another.}
+  - {kind: imports,    family: structural, weight: 0.3, centrality: false, definition: "A module imports another. Ubiquitous — starved so it does not flood."}
+  - {kind: contains,   family: structural, weight: 0.5, centrality: false, definition: An IaC container (e.g. a module) holds a member resource (anchor→resource).}
+  - {kind: references, family: structural, weight: 0.5, centrality: false, definition: One IaC entity references another.}
+
+  # ── semantic (advisory) — these definitions become the prompt's relationship bullets ──
+  - kind: realizes
+    family: semantic
+    weight: 0.9
+    centrality: true
+    definition: A code entity realizes a doc entity (e.g., a class realizes a decision or invariant).
+  - kind: governed-by
+    family: semantic
+    weight: 0.95
+    centrality: true
+    definition: Code or design is constrained by a rule (invariant, constraint).
+  - kind: motivates
+    family: semantic
+    weight: 0.5
+    centrality: false
+    definition: One entity is the reason another exists.
+  - kind: supersedes
+    family: semantic
+    weight: 0.85
+    centrality: false
+    definition: One decision replaces another.
+  - kind: addresses
+    family: semantic
+    weight: 0.7
+    centrality: false
+    definition: A decision resolves an open question.
+
+  # ── concept grounding (deterministic) ──────────────────────────────────────
+  - {kind: implemented-by, family: concept, weight: 0.9, centrality: true, definition: A concept hub is implemented by a code anchor (deterministic alias match).}
+
+# ── POLICY (Phase 2; loaded, not yet authoritative — scoring.py owns these today) ──
+policy:
+  authority_tiers:
+    THEORY: 1.0
+    ARCHITECTURE: 0.95
+    ADR: 0.9
+    CODE: 0.85
+    OVERVIEW: 0.85
+    CONTEXT: 0.8
+    REFERENCE: 0.8
+    OPS: 0.6
+    SPEC: 0.5
+    EPHEMERAL: 0.2
+  authority_default: 0.3
+  edge_weight_default: 0.5
+
+# ── PROJECTION (Phase 3; loaded, not yet authoritative — source_kinds.py owns these) ──
+projection:
+  code_ext: [.py, .ts, .tsx, .js, .jsx, .mjs, .cjs, .rs, .graphql, .gql, .html, .htm]
+  iac_ext:  [.tf.json, .tf, .tfvars, .hcl, .bicep]
+  ops_ext:  [.yaml, .yml]            # IaC + these classify to the OPS tier
+  tiers:
+    THEORY:       ["theory.md"]
+    ARCHITECTURE: ["architecture.md"]
+    ADR:          ["docs/adr/*", "[0-9][0-9][0-9]*.md"]
+    CONTEXT:      ["context.md", "ontology.yaml"]
+    REFERENCE:    ["*reference*", "docs/reference/*"]
+    SPEC:         ["plan.md", "docs/features/*", "specs/*"]
+    EPHEMERAL:    ["*readme*", "*handoff*", "*notes*", "*scratch*", "*todo*"]
+
+# ── CONCEPT GROUNDING (Phase 3; migrates from ontology.toml [concepts.*]; SKOS keys) ──
+# concepts:
+#   knowledge_store:
+#     prefLabel: KnowledgeStore
+#     altLabel:  [graph store, knowledge graph backend]
+#     definition: The mutable graph state behind a Parnas protocol.
