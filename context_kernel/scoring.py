@@ -52,6 +52,7 @@ EDGE_WEIGHTS: dict[str, float] = {
     "inherits": 0.9,      # structural (parser)
     "realizes": 0.9,      # semantic
     "implemented-by": 0.9,  # concept hub → code grounding (deterministic ontology alias)
+    "manifested-by": 0.7,   # aspect-concept hub → code (recall-then-judge, ADR-0025 §4)
     "supersedes": 0.85,   # semantic
     "addresses": 0.7,     # semantic
     "calls": 0.6,         # structural — orchestration depth (ADR-0021)

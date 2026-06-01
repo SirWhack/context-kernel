@@ -77,7 +77,13 @@ def _entity_projects(config: Config, store: KnowledgeStore) -> dict[str, str | N
             seg0 = PurePosixPath(key).parts[0]
             seg_project = seg0 if seg0 in declared_labels else single_label
         for entity in entities:
-            project = None if _is_concept(entity) else (seg_project or single_label)
+            if _is_concept(entity):
+                # Locality is encoded by WHERE the concept is filed (ADR-0025 §3): portfolio
+                # concepts live under the "." scope (seg_project None → cross-repo bridge);
+                # project concepts are filed under their repo's scope → bucket into that repo.
+                project = seg_project
+            else:
+                project = seg_project or single_label
             if entity.id not in projects:
                 projects[entity.id] = project
             elif project is not None:

@@ -103,7 +103,7 @@ edges:
 
   # ── concept grounding (deterministic) ──────────────────────────────────────
   - {kind: implemented-by, family: concept, weight: 0.9, centrality: true, definition: A concept hub is implemented by a code anchor (deterministic alias match).}
-  - {kind: manifested-by,  family: concept, weight: 0.7, centrality: false, definition: An aspect-concept hub is manifested by a code node (recall + LLM-judge grounding; declared, not yet wired — ADR-0025 §4).}
+  - {kind: manifested-by,  family: concept, weight: 0.7, centrality: false, definition: An aspect-concept hub is manifested by a code node it exhibits (recall-then-judge grounding — ADR-0025 §4).}
 
 # ── POLICY (Phase 2; loaded, not yet authoritative — scoring.py owns these today) ──
 policy:

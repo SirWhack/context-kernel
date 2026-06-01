@@ -266,6 +266,42 @@ class LLMSummarizer:
         }
         path.write_text(json.dumps(data), encoding="utf-8")
 
+    def judge_aspect(self, aspect: str, definition: str, name: str, evidence: str) -> bool:
+        """Confirm a code entity PARTICIPATES IN an aspect (ADR-0025 §4 recall-then-judge).
+
+        The precision half of aspect grounding — recall over-collects (0.35 precision in the
+        spike), this filters. Verdict cached content-addressed on (aspect, definition, entity,
+        model, ontology hash), so an unchanged entity is never re-judged and a definition edit
+        forces a re-judge."""
+        key = _cache_key(
+            f"{aspect}\n{definition}\n{name}\n{evidence}",
+            self._model, context="aspect-judge", ontology=self._ontology_hash,
+        )
+        path = self._cache_path(key)
+        if path is not None and path.exists():
+            try:
+                return bool(json.loads(path.read_text(encoding="utf-8")).get("verdict"))
+            except Exception:
+                pass
+        system = (
+            "You classify whether a code entity PARTICIPATES IN a given aspect — i.e. it actively "
+            "implements that behavior, not merely mentions, imports, or names it. Answer with "
+            "exactly one word: YES or NO."
+        )
+        user = (
+            f"Aspect: {aspect}\nDefinition: {definition}\n\n"
+            f"Code entity:\n{name}\n{evidence}\n\n"
+            "Does this entity participate in the aspect? Answer YES or NO."
+        )
+        resp = self._chat(system, user, max_tokens=8)
+        verdict = bool(resp) and resp.strip().upper().startswith("Y")
+        if path is not None:
+            try:
+                path.write_text(json.dumps({"verdict": verdict}), encoding="utf-8")
+            except Exception:
+                pass
+        return verdict
+
     def _chat(self, system: str, user: str, max_tokens: int = 2048) -> str | None:
         headers: dict[str, str] = {}
         if self._api_key:

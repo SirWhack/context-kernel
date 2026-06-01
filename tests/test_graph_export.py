@@ -182,6 +182,26 @@ def test_contains_edge_yields_parent_spine():
     assert f["scope"] == "projA/src"
 
 
+def test_project_scoped_concept_buckets_into_repo_not_bridge():
+    """Regression (review Issue 3): a project-scoped concept filed under its repo's scope
+    exports with that repo's label — only portfolio concepts (under '.') are null bridges."""
+    foo = _entity("id-foo", "Foo", sources=("src/foo.py",))
+    proj_concept = _entity("id-pc", "Widget", kind="concept", kinds=("concept",))
+    port_concept = _entity("id-hub", "panel", kind="concept", kinds=("concept",))
+    store = _Store(
+        {
+            _scope("projA/src"): [foo, proj_concept],  # project concept under the repo scope
+            _scope("."): [port_concept],               # portfolio concept under "."
+        },
+        [],
+    )
+    data = build_graph_export(store, _cfg("projA", "projB"))
+    by_id = {n["id"]: n for n in data["nodes"]}
+    assert by_id["id-pc"]["is_concept"] is True
+    assert by_id["id-pc"]["project"] == "projA"   # bucketed into its repo, not a bridge
+    assert by_id["id-hub"]["project"] is None      # portfolio concept stays a bridge
+
+
 def test_doc_file_has_no_anchor():
     """A markdown file has no structural anchor — anchor_id is None, spine still holds."""
     doc = _entity("id-doc", "Concept", kind="decision", sources=("docs/x.md",))

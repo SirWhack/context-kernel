@@ -259,7 +259,19 @@ def _merge(base: Ontology, overlays: list[tuple[str, Ontology]]) -> Ontology:
     nodes_by_name = {k.name: k for k in base.nodes}
     edges_by_name = {k.name: k for k in base.edges}
     concept_types = {ct.name: ct for ct in base.concept_types}
+    # Seed with the base's own concept instances (normally none, but the degraded no-base
+    # branch promotes an overlay to `base` — its concepts must survive). Base concepts are
+    # kernel-global → portfolio namespace unless they declare otherwise.
     concepts: dict[tuple[str | None, str], Concept] = {}
+    for c in base.concepts:
+        resolved = c.scope or SCOPE_PORTFOLIO
+        ns = None if resolved == SCOPE_PORTFOLIO else SCOPE_PROJECT
+        concepts[(ns, c.key)] = Concept(
+            key=c.key, type=c.type, pref_label=c.pref_label, alt_labels=c.alt_labels,
+            definition=c.definition, scope=resolved,
+            recall_keywords=c.recall_keywords, structural_patterns=c.structural_patterns,
+            source_path=c.source_path,
+        )
 
     def _add_kinds(into: dict[str, Kind], incoming: tuple[Kind, ...], *, layer: str):
         for k in incoming:

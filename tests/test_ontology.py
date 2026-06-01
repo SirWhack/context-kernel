@@ -210,3 +210,18 @@ def test_compose_content_hash_is_composition_aware(tmp_path: Path):
     _write(tmp_path, "concepts:\n  x:\n    type: entity\n    prefLabel: X\n")
     with_overlay = compose_ontology(tmp_path).content_hash
     assert base_only != with_overlay  # an overlay edit changes the per-project cache key
+
+
+def test_compose_degraded_no_base_keeps_overlay_concepts(tmp_path: Path, monkeypatch):
+    """Regression (review Issue 4): when the packaged base is missing, the first overlay is
+    promoted to base — its concepts must survive the merge, not be dropped."""
+    import context_kernel.ontology as onto
+
+    monkeypatch.setattr(onto, "load_base_ontology", lambda: None)
+    _write(tmp_path, (
+        "nodes:\n  - {kind: decision, family: semantic, definition: d}\n"
+        "concepts:\n  widget:\n    type: entity\n    prefLabel: Widget\n"
+    ))
+    composed = compose_ontology(tmp_path)
+    assert composed is not None
+    assert any(c.key == "widget" for c in composed.concepts)

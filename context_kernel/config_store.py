@@ -35,6 +35,7 @@ class IngesterConfig:
     embedder_api_key_env: str = "CF_WORKER_AI_TOKEN"
     contextual_extraction: bool = True   # ADR-0016: feed code entities + vocab into doc extraction
     code_context_tokens: int = 2000      # token budget for the known-code-entities prefix
+    aspect_max_candidates: int = 500     # ADR-0025 §4: per-aspect recall cap before the judge
     exclude_dirs: tuple[str, ...] = ()   # extra dir names to skip when walking (e.g. "test-repos")
     scoring: ScoringConfig = field(default_factory=ScoringConfig)  # ADR-0015 resolved knobs
 

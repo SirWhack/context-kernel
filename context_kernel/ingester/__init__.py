@@ -18,9 +18,15 @@ from context_kernel.change_detection import walk_source_files
 from context_kernel.ingester.concepts import (
     ConceptSpec,
     concepts_from_ontology,
+    ground_aspect_concepts,
     ground_entity_concepts,
 )
-from context_kernel.ontology import compose_ontology, find_ontology, is_ontology_file
+from context_kernel.ontology import (
+    SCOPE_PORTFOLIO,
+    compose_ontology,
+    find_ontology,
+    is_ontology_file,
+)
 from context_kernel.ingester.entity_resolver import (
     CODE_EXT, ExtractedEntity, ExtractedRelationship, resolve as resolve_entities,
 )
@@ -329,12 +335,26 @@ def _apply_concept_layer(
     blob_root: Path,
     config: "IngesterConfig",
     embedder: "Embedder | None",
+    summarizer: "Summarizer | None" = None,
 ) -> None:
-    """Ground curated entity-concepts into the production graph (specs from the composed ontology)."""
+    """Ground curated concepts into the production graph (specs from the composed ontology).
+
+    Entity-concepts ground by deterministic alias-match; aspect-concepts by recall-then-judge
+    when a judge-capable summarizer is present (ADR-0025 §4). Both yield concept hubs + edges,
+    scored and embedded uniformly below."""
     if not specs:
         return
 
     concept_entities, concept_relationships = ground_entity_concepts(all_entities, specs)
+    judge = getattr(summarizer, "judge_aspect", None)
+    if judge is not None:
+        aspect_entities, aspect_relationships = ground_aspect_concepts(
+            all_entities, specs, judge,
+            max_candidates=config.aspect_max_candidates,
+            max_workers=config.parallel_requests,
+        )
+        concept_entities = concept_entities + aspect_entities
+        concept_relationships = concept_relationships + aspect_relationships
     if not concept_entities:
         return
 
@@ -363,7 +383,15 @@ def _apply_concept_layer(
         return
 
     all_entities.extend(scored_concepts)
-    scope_entities.setdefault(".", []).extend(scored_concepts)
+    # File each concept under its locality scope (ADR-0025 §3): portfolio concepts under "."
+    # (the cross-repo bridge), project concepts under their owning project's scope so the
+    # exporter nests them in that repo instead of rendering them as a global bridge.
+    scope_of_id = {
+        s.node_id: ("." if s.scope == SCOPE_PORTFOLIO else (s.project or "."))
+        for s in specs
+    }
+    for c in scored_concepts:
+        scope_entities.setdefault(scope_of_id.get(c.id, "."), []).append(c)
 
     existing_rel_keys = {(r.source_id, r.target_id, r.kind) for r in all_relationships}
     for rel in concept_relationships:
@@ -399,7 +427,7 @@ def _apply_concept_layer(
             chunk_text=concept.description,
             source_path=src,
             kind="entity",
-            scope=ScopePath(Path(".")),
+            scope=ScopePath(Path(scope_of_id.get(concept.id, "."))),
         ))
 
 
@@ -698,6 +726,7 @@ def ingest(
             blob_root=blob_root,
             config=config,
             embedder=embedder,
+            summarizer=summarizer,
         )
 
     commit_files = (
@@ -821,6 +850,7 @@ def ingest_portfolio(
         blob_root=blob_root,
         config=config,
         embedder=embedder,
+        summarizer=summarizer,
     )
     # `_apply_concept_layer` mutates a string-keyed scope map; fold those additions
     # back into the typed map for the final store write.

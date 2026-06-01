@@ -47,6 +47,10 @@ def _build_parser() -> argparse.ArgumentParser:
     graph_p.add_argument("--config", type=Path, default=None)
     graph_p.add_argument("--project", type=str, default=None, help="Limit export to one project (by name)")
     graph_p.add_argument("--out", type=Path, default=None, help="Write JSON to this file; stdout if omitted")
+    graph_p.add_argument(
+        "--slim", action="store_true",
+        help="Omit fields the visualizer doesn't render (descriptions, sources, edge policy) — ~half the size",
+    )
 
     return p
 
@@ -251,12 +255,27 @@ def _cmd_graph(args: argparse.Namespace, config) -> None:
 
     store = _build_store(config.portfolio_root)
     data = build_graph_export(store, config, project=args.project)
-    payload = json.dumps(data, indent=2)
+    if getattr(args, "slim", False):
+        data = _slim_graph(data)
+    # Compact for files (the visualizer parses them — pretty-printing only bloats the payload
+    # and slows the read); pretty only when streaming to a human on stdout.
     if args.out is not None:
-        args.out.write_text(payload, encoding="utf-8")
+        args.out.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
         print(args.out)
     else:
-        print(payload)
+        print(json.dumps(data, indent=2))
+
+
+# Fields the visualizer never reads — dropping them ~halves the payload (descriptions and the
+# sha256 ids dominate). `description`/`sources` carry the bulk; edge policy fields go too.
+def _slim_graph(data: dict) -> dict:
+    _NODE_DROP = ("description", "sources", "centrality", "source_tier")
+    _EDGE_DROP = ("weight", "drift", "kind")
+    return {
+        **data,
+        "nodes": [{k: v for k, v in n.items() if k not in _NODE_DROP} for n in data["nodes"]],
+        "edges": [{k: v for k, v in e.items() if k not in _EDGE_DROP} for e in data["edges"]],
+    }
 
 
 if __name__ == "__main__":

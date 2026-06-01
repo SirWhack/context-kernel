@@ -111,10 +111,17 @@ concept_types:
 ```
 
 `entity` grounding is the alias-match already in production (`concepts.py`). `aspect` grounding
-(recall + LLM-judge) and its `manifested-by` edge are **declared but not yet built** — the same
-"declare ahead, wire later" posture ADR-0024 used for policy/projection. The richer fields the
-Ticket Agent spike already authored (`recall_keywords`, `structural_patterns`, `precision_patterns`)
-thereby become first-class instead of silently dropped by the loader.
+(recall-then-judge) and its `manifested-by` edge are **implemented**
+(`concepts.ground_aspect_concepts` + `LLMSummarizer.judge_aspect`): recall gathers candidates via
+`recall_keywords`/`structural_patterns` (capped per `ingester.aspect_max_candidates`), an LLM judge
+confirms participation (verdicts cached), and confirmed candidates get a `manifested-by` edge from a
+portfolio-global aspect hub. The richer fields the Ticket Agent spike authored (`recall_keywords`,
+`structural_patterns`, `precision_patterns`) are first-class instead of silently dropped.
+
+*(Update: the original proposal deferred aspect grounding as "declared, not yet wired"; it was
+subsequently implemented and ported from the spike — recall over entity descriptions, not raw
+source, with the judge supplying precision. Source-level structural recall remains a future
+enhancement.)*
 
 ### 5. The content hash becomes composition-aware and per-project — surgical cache busts
 

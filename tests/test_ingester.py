@@ -1409,6 +1409,60 @@ class TestIngestProjectNamespacing:
         target_names = {e.name for e in store.entities if e.id in targets}
         assert {"StepPanel", "Panel"} <= target_names
 
+    def test_ground_aspect_concepts_recall_then_judge(self):
+        """ADR-0025 §4: recall gathers candidates, the judge confirms, hub + manifested-by emitted."""
+        from context_kernel.graph.protocol import Entity
+        from context_kernel.ingester.concepts import ConceptSpec, ground_aspect_concepts
+
+        code = [
+            Entity(id="c1", name="retry_call", kind="function",
+                   description="def retry_call(): call with backoff", sources=("a.py",)),
+            Entity(id="c2", name="add", kind="function",
+                   description="def add(x, y): return x + y", sources=("a.py",)),
+            Entity(id="c3", name="CircuitBreaker", kind="class",
+                   description="class CircuitBreaker: trips on failure", sources=("b.py",)),
+        ]
+        spec = ConceptSpec(
+            key="error-handling", pref_label="Error Handling", concept_type="aspect",
+            alt_labels=(), definition="detects/recovers from failures", source_path="ontology.yaml",
+            scope="portfolio", recall_keywords=("retry", "backoff"),
+            structural_patterns=("CircuitBreaker",),
+        )
+        # Recall surfaces c1 (keyword) and c3 (pattern); c2 never recalled. Judge rejects "add".
+        judge = lambda asp, defn, name, ev: name != "add"  # noqa: E731
+        ents, rels = ground_aspect_concepts(code, [spec], judge)
+
+        assert len(ents) == 1
+        assert ents[0].kind == "concept" and "aspect-concept" in ents[0].kinds
+        targets = {r.target_id for r in rels if r.kind == "manifested-by"}
+        assert targets == {"c1", "c3"}  # c2 not recalled; (a rejecting judge would also drop it)
+
+    def test_ground_aspect_concepts_judge_can_reject_all(self):
+        from context_kernel.graph.protocol import Entity
+        from context_kernel.ingester.concepts import ConceptSpec, ground_aspect_concepts
+
+        code = [Entity(id="c1", name="retry_call", kind="function",
+                       description="retry with backoff", sources=("a.py",))]
+        spec = ConceptSpec(key="eh", pref_label="EH", concept_type="aspect", alt_labels=(),
+                           definition="d", source_path="o.yaml", scope="portfolio",
+                           recall_keywords=("retry",), structural_patterns=())
+        ents, rels = ground_aspect_concepts(code, [spec], lambda *a: False)  # judge rejects all
+        assert ents == [] and rels == []  # no confirmed candidates → no hub
+
+    def test_concept_hub_id_does_not_collide_with_doc_entity_id(self):
+        """Regression (review Issue 1): a curated concept whose key normalizes to a doc
+        entity's name must NOT share its id, or the dedup guard silently drops the hub and
+        the real code class is left grounded by the wrong (doc) node."""
+        from context_kernel.ingester.concepts import _hub_id
+        from context_kernel.ingester.entity_resolver import _concept_id, normalize
+
+        # Single-repo ingest: both namespaces are empty (the worst case for collision).
+        for name in ("Session", "Dataset"):
+            key = normalize(name)
+            doc_entity_id = _concept_id(None, key)   # resolver's `|concept|` id for a doc node
+            concept_hub_id = _hub_id("", key)        # curated hub id
+            assert concept_hub_id != doc_entity_id, f"{name}: hub id collides with doc entity id"
+
 
 # ── Ingester observability (S8) ────────────────────────────────────────
 
