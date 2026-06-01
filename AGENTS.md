@@ -1,8 +1,21 @@
 <!-- context-kernel-freshness
-graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
-source-tree: 8bbe90898d9232e845b24fcd934eef0baf9d38c3481009b4fef1bbb12a433805
-materialized: 2026-05-27T21:18:16Z
+graph: ce4c30de6021574f8be593ca3ef2c62ccfde5e39118e774477c1d6d76f0f9abe
+source-tree: 3ebc2db5c9b84f661278f6256b5405a5f30938741706acbc62233fc4e037fac5
+materialized: 2026-06-01T01:08:18Z
 -->
+
+This scope implements the Context Kernel’s core knowledge graph — the single source of truth from which all materialized documentation (AGENTS.md files and views) is derived. It owns the full lifecycle: ingesting source files into entities and relationships, resolving those entities into canonical nodes, storing them in a graph backend, and projecting the graph back into markdown files that coding agents read via Read/Grep/Glob. The scope enforces the system’s central invariants: no stale serves (freshness gate), idempotent regeneration, and content-addressed no-ops on unchanged source.
+
+The public API surface centers on the `ck` CLI (`context_kernel/agent_cli.py`), which dispatches to sub-commands: `init`, `ingest`, `materialize`, `check`, and `mcp`. The ingester pipeline (`entity_resolver.py`) runs after raw entity collection, collapsing code definitions, docs, and ADRs into canonical nodes via `normalize()` and `resolve()` — pure functions with no I/O. The `KnowledgeStore` protocol (defined in `context_kernel/graph/protocol.py`) abstracts the graph backend behind read methods (`get_entity()`, `get_neighbors()`, `search_similar()`) and a single write method (`upsert()`) called only by the ingester. `ConfigStore` loads `.context-kernel/config.toml` at every invocation, exposing `ProjectSpec`, `IngesterConfig`, `MaterializerConfig`, and `OrientationConfig` dataclasses.
+
+Internally, the scope is organized around several key modules. `change_detection.py` is the sole git-I/O layer, providing `source_tree_hash()`, `changed_since()`, `commit_of()`, `churn()`, and `size()` — all returning safe defaults on failure so drift falls to zero rather than raising. `freshness_gate.py` enforces the “no stale serve” invariant by raising `StaleReadError` when a read crosses a commit boundary. `operational_journal.py` maintains an append-only `.context-kernel/log.md` for audit. The materializer (described in the scope’s docstring) renders `(scope, graph_commit, view_spec)` into markdown, defining the freshness header format and pinned-block merge semantics. `scoring.py` provides a single `confidence()` function combining authority and node drift.
+
+The scope depends on LightRAG as the v1 graph backend, wrapped behind the `KnowledgeStore` protocol to allow future backend swaps. It imports from `context_kernel.source_kinds` for code path detection, `context_kernel.types` for core types like `GraphCommit`, `Sha256`, and `ScopePath`, and `context_kernel.scoring` for confidence calculations. The embedding and summarization models are abstracted behind interfaces, hiding changes between Qwen3 variants or cloud models. All materialized files are derived from the graph and version-controlled alongside source, with regeneration triggered by a git pre-commit hook — no background processes, no runtime freshness gate.
+
+## Recommended documentation
+
+This scope has 15 code entities across 1 files but no reference documentation. To create one: `/init-reference model-time`
+
 <!-- pinned -->
 # CLAUDE.md
 
@@ -84,11 +97,3 @@ THEORY.md and ARCHITECTURE.md are load-bearing — if a change would violate an 
 
 This repo (`model-time`) is one project in a portfolio rooted at `~/Code/`. The portfolio config lives at `~/Code/.context-kernel/config.toml` and lists three projects: `model-time`, `evergreenlabs`, `evergreenlabs-bot`. The `ck` CLI operates at the portfolio level — `--portfolio ~/Code/` ingests all declared projects into a shared graph.
 <!-- /pinned -->
-
-This scope implements the Context Kernel's model-time subsystem, which governs how source documents are ingested into a knowledge graph and materialized into developer-facing documentation. It enforces the core invariant that materialized files (AGENTS.md, CLAUDE.md bridges, and cross-cutting views) are always in sync with their source code at commit boundaries. The scope owns the entire pipeline from source file to readable summary, including the freshness guarantees that make stale reads structurally impossible.
-
-The public API surface consists of two main interfaces. The **Ingester** reads portfolio source files and writes to the **Graph** knowledge store, owning summarization model choice, embedding model choice, entity-extraction prompt templates, and source-format handlers. The **Materializer** reads from the Graph and writes the materialized tree — AGENTS.md per scope, CLAUDE.md bridge files with `@AGENTS.md` imports, and configured views under `.context-kernel/views/`. Both are invoked through the **CLI** (`ck ingest`, `ck materialize`) and the **FreshnessGate**, which runs as a git pre-commit hook that blocks commits on staleness.
-
-Internally, the scope structures around several key components. The **Graph** is the only mutable state, wrapped behind a thin protocol for backend flexibility (v1 uses LightRAG with pluggable storage). The **OrientationServer** exposes an MCP surface (`ck mcp`) with two read-only tools — `overview` and `find` — that point coding agents at materialized files without performing LLM calls or graph traversal. The **FreshnessGate** checks headers containing graph_commit and source-tree hashes, implementing invariant 2 from THEORY.md by making stale reads structurally impossible at the read boundary. The **ConfigStore** loads from `.context-kernel/config.toml` per invocation, with all knobs having defaults and secrets explicitly excluded.
-
-Key design patterns include Parnas-secret interfaces for model choices (summarization and embedding), a pure-function projection from Graph to materialized tree, and a stateless MCP server with no runtime synthesis. The scope rejects pull-based JIT regeneration in favor of pre-commit hook enforcement, and explicitly does not support real-time updates, multi-tenant identity, or HTTP transport in v1. The hybrid corpus for `find` searches lives inside the Graph's vector store, not as a separate artifact.

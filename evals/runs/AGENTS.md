@@ -1,0 +1,13 @@
+<!-- context-kernel-freshness
+graph: ce4c30de6021574f8be593ca3ef2c62ccfde5e39118e774477c1d6d76f0f9abe
+source-tree: 14200b895860f6966a5927c6bb54357687b6b312a18105c14afee94e59ccee0e
+materialized: 2026-06-01T01:08:20Z
+-->
+
+This scope handles the evaluation and measurement infrastructure for the Context Kernel's model-time retrieval system, specifically focusing on query-time neighbor expansion (ADR-0023) and the freshness enforcement invariant. It provides the tooling to run deterministic A/B comparisons between retrieval configurations, measure rank impact, and enforce read-boundary constraints that prevent stale data from being served to consumers.
+
+The public API surface centers on two key interfaces. The `FreshnessGate` module exports `StaleReadError`, `check`, and `log` — enforcing invariant 2 ("no stale serve") by validating read boundaries against the knowledge store's change detection system. The `expansion_ab.py` script exposes `main` and `BATTERY` (a set of gold-answer questions), calling `nearest_chunks` and `rank_by_relevance` directly from the orientation server tools to isolate retrieval effects from token-budget truncation. The `entity_resolver.py` module provides `normalize` and `resolve` functions that collapse raw entities and relationships into canonical nodes, implementing code-anchored identity merging as a pure function with no I/O.
+
+Internally, the scope organizes around several distinct concerns. The `RustHandler` class in `rust_handler.py` mirrors the TypeScript handler pattern — a `StructuredHandler` using tree-sitter for parsing `.rs` files into entities and relationships, with specific handling for `impl` blocks (emitting `Type::method` qualified names) and `use` statements (last-path-segment imports). The `confidence` function in `scoring.py` computes trust as `authority × (1 − node_drift)`, keeping centrality separate. The entity resolver uses `STOPLIST` and `_ARTICLES` for normalization, with `ExtractedEntity`, `ExtractedRelationship`, `CanonicalEntity`, and `ResolvedRelationship` dataclasses forming the core domain types.
+
+This scope depends on the broader Context Kernel graph infrastructure, importing from `context_kernel.graph.protocol.KnowledgeStore`, `context_kernel.change_detection.source_tree_hash`, and `context_kernel.materializer.headers.parse`. It connects to the orientation server's retrieval tools (`nearest_chunks`, `rank_by_relevance`) and the scoring configuration system. The expansion A/B test isolates retrieval from the LLM agent layer entirely — no sonnet agent, no cost, no run-to-run noise — by calling the real retrieval and ranking stack twice (expansion off, then on) and reporting where gold files land in the ranked results.

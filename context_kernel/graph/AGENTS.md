@@ -1,14 +1,14 @@
 <!-- context-kernel-freshness
-graph: 4828895ec2ab8c46292fc502e3c028e8b68915c679ff81f463cf9148983976a0
-source-tree: 1bed2f2377c46c241470e8d8452d0c95090f6e2c57c8f52e6a3bbff9e51d2420
-materialized: 2026-05-27T21:03:11Z
+graph: ce4c30de6021574f8be593ca3ef2c62ccfde5e39118e774477c1d6d76f0f9abe
+source-tree: 1a68f5e6a410ee6e2f8ebe02300b4c41032a3824264c1e499cac18fa2340d5ee
+materialized: 2026-06-01T01:08:19Z
 -->
 
-This scope owns the graph knowledge store — the persistent source of truth for extracted entities, relationships, embeddings, and per-scope summaries. It is the data backbone that the rest of the context kernel reads from and writes to, implementing the storage and retrieval layer described in ARCHITECTURE.md §2.1. The graph scope is responsible for content-addressed blob storage, vector similarity search, and maintaining the entity-relationship topology that drives context assembly.
+The graph scope owns the knowledge store — the system’s source of truth for entities, relationships, and vector embeddings. It provides a read-heavy query surface for the rest of the application while restricting writes to a single `upsert` entry point, enforcing the invariant that only the ingester can mutate the graph. The scope also handles content-addressed blob storage for derived artifacts like summaries and embeddings, using SHA-256 digests as filenames via the `hash_bytes` and `blob_path` functions in `addressing.py`.
 
-The public API surface is defined entirely by the `KnowledgeStore` protocol in `protocol.py`. This protocol declares nine methods: read operations like `get_entity`, `get_neighbors`, `get_summary`, `get_embedding`, and `search_similar`; listing operations `list_summaries` and `list_entities_by_scope`; and a single write operation `upsert` that accepts a `GraphCommit` along with lists of `Entity`, `Relationship`, `Summary`, and `EmbeddedChunk` objects. Supporting data types — `Entity`, `Relationship`, `Neighbor`, `Summary`, `EmbeddedChunk`, and `SearchResult` — are all dataclasses in the same module, forming a clean data contract that decouples graph consumers from any particular backend.
+The public API is defined by the `KnowledgeStore` Protocol in `protocol.py`, which acts as a Parnas seam hiding the backend choice. It exposes nine methods: `graph_commit`, `get_entity`, `get_neighbors`, `get_summary`, `get_embedding`, `search_similar`, `list_summaries`, `list_entities_by_scope`, and `upsert`. The protocol also defines the data types that flow through these methods — `Entity`, `Relationship`, `Neighbor`, `Summary`, `EmbeddedChunk`, and `SearchResult` — all plain dataclasses with no behavior. The `__init__.py` re-exports these seven types for convenient importing by other scopes.
 
-The sole production implementation is `LightRAGStore` in `lightrag_adapter.py`, which persists data as JSON files on disk and performs brute-force cosine similarity for vector search via the private `_cosine_sim` helper. It stores the graph topology using NetworkX conventions for neighbor lookups. The `addressing.py` module provides two utility functions — `hash_bytes` for computing canonical `Sha256` digests and `blob_path` for resolving on-disk paths for content-addressed blobs by kind (`'embeddings'` or `'summaries'`). This scope depends on `context_kernel.types` for `GraphCommit`, `ScopePath`, and `Sha256`, and on the standard library for hashing, JSON, and path operations.
+The sole concrete implementation is `LightRAGStore` in `lightrag_adapter.py`, which persists the graph to JSON files and performs brute-force cosine similarity for vector search (using a private `_cosine_sim` helper). It stores a NetworkX-compatible graph topology for neighbor lookups and manages on-disk state through `_load` and `_save` methods. This is the v1 backend; the architecture document notes that a future async LightRAG library integration is deferred. The scope depends on `context_kernel.types` for `GraphCommit`, `ScopePath`, and `Sha256`, and on Python standard library modules `json`, `math`, `os`, `struct`, and `pathlib`.
 
 ## Recommended documentation
 
