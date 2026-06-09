@@ -531,7 +531,17 @@ over-obedience to false flags) compounds — it ships behind the eval or not at 
   honest answer: nobody knows; R2+R7 generate the first data.
 - **ARCHITECTURE.md:** §1.1/§2.1 store correction (R10); add `signals.py` and the
   conformance pass to the module model when R7/R5-phase-2 land (each warrants its ADR).
-- **ADR candidates, in order:** edge-derived materialization; eval harness; hierarchical
-  summaries (amends ADR-0008); structural importance (extends ADR-0015); tenets (extends
-  ADR-0024/0025); merge review queue (extends ADR-0017); manifest/contract handlers;
-  design-signals view.
+- **ADRs drafted from this document** (all Status: Proposed, 2026-06-09):
+
+  | Rec | ADR |
+  |---|---|
+  | R1 edge-derived sections (+ R10 path budget) | [ADR-0028](./docs/adr/0028-edge-derived-agents-md-sections.md) |
+  | R2 eval harness | [ADR-0029](./docs/adr/0029-private-paired-eval-harness.md) |
+  | R3 hierarchical summaries | [ADR-0030](./docs/adr/0030-hierarchical-scope-summarization.md) (amends ADR-0007/0008) |
+  | R4 structural importance | [ADR-0031](./docs/adr/0031-structural-importance-pagerank.md) (extends ADR-0015) |
+  | R5 tenets | [ADR-0032](./docs/adr/0032-tenets-authored-design-rules.md) (extends ADR-0024/0025) |
+  | R6 merge review queue | [ADR-0033](./docs/adr/0033-merge-review-queue.md) (extends ADR-0017) |
+  | R9 ontology guardrails | [ADR-0034](./docs/adr/0034-ontology-evolution-guardrails.md) (extends ADR-0024/0025) |
+  | R8 manifest/contract handlers | [ADR-0035](./docs/adr/0035-manifest-contract-handlers.md) (relates ADR-0026) |
+  | R7 design-signals view | [ADR-0036](./docs/adr/0036-design-signals-view.md) |
+  | R10 store naming/claims correction | [ADR-0037](./docs/adr/0037-jsongraphstore-naming-correction.md) (corrects ADR-0004) |
