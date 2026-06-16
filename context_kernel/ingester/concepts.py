@@ -231,12 +231,12 @@ def ground_aspect_concepts(
     confirmed: dict[str, list[Entity]] = {}
     for (spec, c), ok in zip(tasks, verdicts):
         if ok:
-            confirmed.setdefault(spec.key, []).append(c)
+            confirmed.setdefault(spec.node_id, []).append(c)
 
     out_entities: list[Entity] = []
     out_relationships: list[Relationship] = []
     for spec, candidates in recalled:
-        hits = confirmed.get(spec.key, [])
+        hits = confirmed.get(spec.node_id, [])
         if not hits:
             continue
         cid = spec.node_id

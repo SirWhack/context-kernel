@@ -129,6 +129,12 @@ def find_ontology(root: Path) -> Path | None:
     ):
         if cand.exists():
             return cand
+    for legacy in (root / "ontology.toml", root / ".context-kernel" / "ontology.toml"):
+        if legacy.exists():
+            log.warning(
+                "found legacy %s, but overlays are YAML-only since ADR-0025; its concepts are ignored",
+                legacy,
+            )
     return None
 
 
@@ -242,7 +248,12 @@ def load_ontology(root: Path) -> Ontology | None:
     path = find_ontology(root)
     if path is None:
         return None
-    return _parse(path.read_bytes(), source_path=path.name)
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        log.warning("ontology at %s could not be read; falling back to defaults", path)
+        return None
+    return _parse(raw, source_path=path.name)
 
 
 def load_base_ontology() -> Ontology | None:

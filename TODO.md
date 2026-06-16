@@ -48,8 +48,9 @@ If doc→code recall matters more later, the viable paths (NOT cosine-on-descrip
 - **(B) LLM pair-judge** on token-prefiltered candidate pairs — precise but slow; gate hard against
   confabulation (ADR-0009).
 
-`numpy` + `context_kernel/ingester/semantic_linker.py` are committed but **not wired in** (kept for
-variant A). `scripts/stage4_semantic.py` is the measurement harness.
+`semantic_linker.py` (the untyped embedding recall layer for variant A) was **removed** — ADR-0027
+rejected it in favour of deterministic `path:Symbol` resolution. Revisit only as a *judged* pass per
+that ADR.
 
 ## Caveats worth an ADR note
 
