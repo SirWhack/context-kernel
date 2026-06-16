@@ -397,3 +397,68 @@ Lower-tier (real, won't reshape the thesis):
   gap fundamental, making attention the only right tool? (Suspect the latter.)
 - Ontology maintenance: who authors it, how does it stay fresh, does it become the new rot surface
   the way stale docs did (the HANDOFF incident)?
+
+## Outside read: WaveScope (wavelet code-context), reviewed 2026-06-04
+
+Source: yogthos.net/posts/2026-06-02-wavescope.html. Treats a source file as a 1-D signal — each
+line weighted by keyword (`class`=1.0, `export`=0.6, …) — and runs a Ricker-wavelet transform at
+eight scales (1→128 lines). Peaks collapse into three zoom bands handed to the model as JSON: **fine**
+(raw source), **medium** (signatures + context), **coarse** (section summaries). Language-agnostic
+(~10-line keyword config/language), ~3ms/file, **computed on-demand, persists no graph**. Claims 92%
+token reduction on complexity tasks, 63% on structural (unaudited; the post admits no limitations).
+
+**Why it matters to us — convergent diagnosis.** It rejects flat embedding RAG for the same reason we
+do — it "loses position and structure" — and wants the model to "zoom in and out" across structural
+altitudes. That's an independent restatement of the thesis (context at one altitude doesn't compose
+into another), arrived at from signal processing rather than graphs. Confirms the anti-flat-RAG bet
+from an orthogonal direction.
+
+**Why it's a different animal — it stops where we start.** WaveScope's "zoom" composes altitudes
+*within a single file* (function ⊂ class ⊂ file). It addresses cross-file relationships minimally (one
+project-wide importance ranker, no cross-module edge detection) and cannot bridge languages: keyword
+weighting is *lexical*, so it has no joint to attach a TS `StepPanel` and a Python one to — exactly
+what ADR-0018's language-neutral concept + per-language `CodeSpan` evidence exists to do. So it's
+closer to a *within-scope materialization view* than to a context kernel. It does not touch our
+thesis-load-bearing question (cross-scope linkage density, ADR-0009).
+
+**Design forks worth naming (not refutations — downstream of its narrow scope):**
+
+- *Stateless recompute vs. graph-as-truth.* It persists nothing and recomputes per query because a
+  pure wavelet transform is ms-cheap — a coherent alternative to Invariant 4 (content-addressed
+  immutability) + the freshness gate: *recompute-cheap* instead of *cache-and-gate*. Only available
+  because it stays intra-file; cross-altitude relationships aren't free to recompute.
+- *Runtime synthesis vs. pre-materialize.* Bands are assembled at query time, against our Invariant 3.
+  Defensible at 3ms/file; but our pre-materialize stance is about graph authority + docs travelling
+  with the commit, not latency, so it's not a head-to-head loss.
+- *Heuristic structure vs. AST ground truth.* It rejects AST to stay language-agnostic; we pay the
+  parser cost (StructuredHandler) deliberately and treat AST entities as always-current/high-confidence
+  (ADR-0015/0017). Their wavelet peaks *statistically approximate* structure we already have exactly,
+  and will misfire where structure isn't keyword-dense (DSLs, point-free, data/config files). We'd
+  rate that a low-confidence signal, not a primary structural source.
+
+**Three borrowable ideas (candidates — none measured, none promoted):**
+
+1. **Entropy / "gnarly parts" as a scoring signal.** WaveScope quantizes wavelet coefficients to flag
+   structural irregularity vs. boilerplate. That's a cheap, *source-derived* complexity/attention
+   signal we lack — could feed `scoring.confidence()` or churn-aware surfacing (`change_detection.churn()`
+   already exists): "this region is irregular → summarize harder / surface it." Mechanically derived,
+   so it dodges the "annotations must never be load-bearing" risk in THEORY.
+
+2. **Fine/medium/coarse band format as a view spec.** Three zoom levels (source / signatures / section
+   summary) map cleanly onto altitudes *within* a scope — a candidate shape for a materialized view
+   under `.context-kernel/views/`, arguably what a per-scope `AGENTS.md` is already groping toward.
+
+3. **Keyword-weighting as a StructuredHandler fallback.** For languages with no AST/tree-sitter handler,
+   a wavelet/keyword pass gives *structure-lite without an LLM call* — strictly better than dropping to
+   the ChunkHandler+Summarizer path. Cheap coverage extension for unsupported languages.
+
+**Caveat on the source.** Promotional framing, no admitted failure modes, benchmark figures
+unreproduced and with no falsifiable frame. Treat the token-reduction numbers as marketing until
+reproduced. (We ban a v1 eval harness too — but we at least catalog the questions that could kill the
+thesis; WaveScope states no failure condition.)
+
+**Bottom line.** A sharp answer to a *smaller* question — hierarchical orientation *inside a file*,
+language-agnostically, for nearly free. Confirms our anti-flat-RAG diagnosis and offers 2–3 borrowable
+signals. But its stateless/runtime choices are coherent only *because* it stays intra-file; they are
+not arguments against the graph + pre-materialization + freshness invariants, which exist precisely to
+serve the cross-altitude composition WaveScope doesn't attempt.
