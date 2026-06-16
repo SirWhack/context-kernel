@@ -3,7 +3,7 @@
 **Date:** 2026-06-09
 **Status:** Proposed — each item is an ADR/spec candidate, sequenced for build order
 **Basis:** [REVIEW-FABLE.md](./REVIEW-FABLE.md) + the three research documents under
-[docs/research/](./docs/research/). Every recommendation cites its evidence there; this
+[docs/research/](../research/). Every recommendation cites its evidence there; this
 document is the *what to build*, those are the *why to believe it*.
 
 Conventions: each item lists **What / Why / Design / Touches / Accept / Effort / Risks**.
@@ -26,7 +26,7 @@ best-performing graph serialization for LLM comprehension (KG-LLM-Bench: up to 1
 effect; Turtle/JSON-LD worst). Non-redundant *structural* facts are exactly the content class
 that helps, where generated prose restating code hurts (ETH AGENTS.md study: human-specific
 content +4 pts, redundant generated content −0.5 to −2 pts). See
-[hierarchical-materialization §3](./docs/research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
+[hierarchical-materialization §3](../research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
 
 **Design.**
 - New module `context_kernel/materializer/sections.py`, pure functions taking
@@ -74,7 +74,7 @@ similarity threshold 0.82, authority tiers); ADR-0023 ships default-on and UNVAL
 R7, R8 below all require measurement before agent-facing exposure. The bar to beat is strong
 agentic grep (GrepRAG: naive lexical retrieval ≈ graph baselines), and public benchmarks are
 contaminated/defective (SWE-bench Verified: 59.4% of o3-failures had task defects). See
-[hierarchical-materialization §4](./docs/research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
+[hierarchical-materialization §4](../research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
 
 **Design.**
 - `evals/suite.yaml`: ~50–100 entries —
@@ -116,7 +116,7 @@ with quality gains and **measured 4% node-level hallucination with zero upward p
 GraphRAG root summaries at 2.3–2.6% of corpus tokens still win 72% of comprehensiveness
 comparisons; every repo-level system composes over the directory tree, none over semantic
 clusters. See
-[hierarchical-materialization §1](./docs/research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
+[hierarchical-materialization §1](../research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
 
 **Design.**
 - `_process_scope` gains a topological pass: process scopes deepest-first; a parent's prompt
@@ -158,7 +158,7 @@ on the entity, used to select what survives into summaries and R1 sections.
 repo map — recipe verified from source; HippoRAG PPR +20% multi-hop; LocAgent). ADR-0015
 centrality answers a different question (doc grounding) and deliberately excludes
 `calls`/`imports`. See
-[hierarchical-materialization §2](./docs/research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
+[hierarchical-materialization §2](../research/2026-06-09-hierarchical-materialization-and-importance-ranking.md).
 
 **Design.**
 - `scoring.py`: `def importance(nodes: Iterable[str], edges: Iterable[tuple[str, str, float]],
@@ -205,7 +205,7 @@ class with a measured positive effect on agent success (+4 pts), and it is the c
 normative feature — distribution, not computation. The reflexion model (authored model vs.
 extracted structure, divergences reported) is the 30-year-validated shape, and its known
 weakness — the authored model going stale — is the kernel's home turf. See
-[design-signals §5–6, §8.1–3](./docs/research/2026-06-09-design-signals-normative-layer.md).
+[design-signals §5–6, §8.1–3](../research/2026-06-09-design-signals-normative-layer.md).
 
 **Design.**
 - Schema (base declares it; overlays carry instances, same as concepts):
@@ -257,7 +257,7 @@ them pay-as-you-go ordered; operator verdicts land in ontology overlays as `altL
 that preserves idempotency is persisting human verdicts as first-class inputs (Apple Saga's
 quarantine model), queueing only where signals disagree (QBC/HUMO: human-on-the-gray-zone
 gives bounded-cost quality guarantees). See
-[ontology-and-entity-resolution §2](./docs/research/2026-06-09-ontology-and-entity-resolution.md).
+[ontology-and-entity-resolution §2](../research/2026-06-09-ontology-and-entity-resolution.md).
 
 **Design.**
 - `entity_resolver.resolve()` additionally returns `merge_candidates: list[MergeCandidate]`
@@ -317,7 +317,7 @@ depth/pass-through have *no* published validation — the kernel pioneers, so it
 relatively and never sets absolute cutoffs. The governing risk is alert fatigue (Google: ≤10%
 effective FPs, disable-don't-tune, **queue-in-workflow — dashboards failed twice**) and, for
 agents, over-obedience. See
-[design-signals](./docs/research/2026-06-09-design-signals-normative-layer.md) throughout.
+[design-signals](../research/2026-06-09-design-signals-normative-layer.md) throughout.
 
 **Design.**
 - `change_detection.py` gains `co_change(window: int = 200) -> dict[frozenset[str], tuple[int, int]]`
@@ -375,7 +375,7 @@ deterministic cross-project structure being dropped. External libraries having n
 also the residual conflation source ADR-0026 measured (11.4% of `imports` landing on doc
 prose). Name-based cross-language matching has no research support; **the contract artifact is
 the production-standard anchor** (FastAPI → openapi.json → openapi-typescript). See
-[ontology-and-entity-resolution §5](./docs/research/2026-06-09-ontology-and-entity-resolution.md).
+[ontology-and-entity-resolution §5](../research/2026-06-09-ontology-and-entity-resolution.md).
 
 **Design.**
 - Ontology: new structural kind `external-package` (closed family, parser-emitted); reuse the
@@ -425,7 +425,7 @@ batch "release" commits; the composed kind-count gets a budget warning.
 band: single-digit-to-low-teens kinds per prompt) — ADR-0025's union-add could quietly walk a
 project's composed prompt out of the band. Production vocabularies survive on stable IDs +
 batch editorial gates (SKOS/Getty/LoC). See
-[ontology-and-entity-resolution §4](./docs/research/2026-06-09-ontology-and-entity-resolution.md).
+[ontology-and-entity-resolution §4](../research/2026-06-09-ontology-and-entity-resolution.md).
 
 **Design.**
 - Today's `log.debug("…accepting anyway")` path additionally records
@@ -535,13 +535,13 @@ over-obedience to false flags) compounds — it ships behind the eval or not at 
 
   | Rec | ADR |
   |---|---|
-  | R1 edge-derived sections (+ R10 path budget) | [ADR-0028](./docs/adr/0028-edge-derived-agents-md-sections.md) |
-  | R2 eval harness | [ADR-0029](./docs/adr/0029-private-paired-eval-harness.md) |
-  | R3 hierarchical summaries | [ADR-0030](./docs/adr/0030-hierarchical-scope-summarization.md) (amends ADR-0007/0008) |
-  | R4 structural importance | [ADR-0031](./docs/adr/0031-structural-importance-pagerank.md) (extends ADR-0015) |
-  | R5 tenets | [ADR-0032](./docs/adr/0032-tenets-authored-design-rules.md) (extends ADR-0024/0025) |
-  | R6 merge review queue | [ADR-0033](./docs/adr/0033-merge-review-queue.md) (extends ADR-0017) |
-  | R9 ontology guardrails | [ADR-0034](./docs/adr/0034-ontology-evolution-guardrails.md) (extends ADR-0024/0025) |
-  | R8 manifest/contract handlers | [ADR-0035](./docs/adr/0035-manifest-contract-handlers.md) (relates ADR-0026) |
-  | R7 design-signals view | [ADR-0036](./docs/adr/0036-design-signals-view.md) |
-  | R10 store naming/claims correction | [ADR-0037](./docs/adr/0037-jsongraphstore-naming-correction.md) (corrects ADR-0004) |
+  | R1 edge-derived sections (+ R10 path budget) | [ADR-0028](../adr/0028-edge-derived-agents-md-sections.md) |
+  | R2 eval harness | [ADR-0029](../adr/0029-private-paired-eval-harness.md) |
+  | R3 hierarchical summaries | [ADR-0030](../adr/0030-hierarchical-scope-summarization.md) (amends ADR-0007/0008) |
+  | R4 structural importance | [ADR-0031](../adr/0031-structural-importance-pagerank.md) (extends ADR-0015) |
+  | R5 tenets | [ADR-0032](../adr/0032-tenets-authored-design-rules.md) (extends ADR-0024/0025) |
+  | R6 merge review queue | [ADR-0033](../adr/0033-merge-review-queue.md) (extends ADR-0017) |
+  | R9 ontology guardrails | [ADR-0034](../adr/0034-ontology-evolution-guardrails.md) (extends ADR-0024/0025) |
+  | R8 manifest/contract handlers | [ADR-0035](../adr/0035-manifest-contract-handlers.md) (relates ADR-0026) |
+  | R7 design-signals view | [ADR-0036](../adr/0036-design-signals-view.md) |
+  | R10 store naming/claims correction | [ADR-0037](../adr/0037-jsongraphstore-naming-correction.md) (corrects ADR-0004) |

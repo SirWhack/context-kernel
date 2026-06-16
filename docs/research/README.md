@@ -4,7 +4,7 @@ Research-grounded feature investigations. These are **inputs to ADRs, not decisi
 document surveys the literature for a planned feature area, flags evidence confidence, and ends
 with design implications and the open questions an eventual ADR must ratify.
 
-Origin: the 2026-06-09 external review ([REVIEW-FABLE.md](../../REVIEW-FABLE.md)).
+Origin: the 2026-06-09 external review ([REVIEW-FABLE.md](../reviews/REVIEW-FABLE.md)).
 
 | Document | Feature area | Feeds |
 |---|---|---|

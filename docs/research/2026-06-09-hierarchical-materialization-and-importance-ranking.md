@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-09
 **Status:** Research notes — input to future ADRs (not a decision)
-**Origin:** [REVIEW-FABLE.md](../../REVIEW-FABLE.md) Part I, priorities 1, 2, and 4
+**Origin:** [REVIEW-FABLE.md](../reviews/REVIEW-FABLE.md) Part I, priorities 1, 2, and 4
 **Companion docs:** [ontology & entity resolution](./2026-06-09-ontology-and-entity-resolution.md),
 [design signals / normative layer](./2026-06-09-design-signals-normative-layer.md)
 

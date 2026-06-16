@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-09
 **Status:** Research notes — input to future ADRs (not a decision)
-**Origin:** [REVIEW-FABLE.md](../../REVIEW-FABLE.md) Part II; THEORY.md open question on
+**Origin:** [REVIEW-FABLE.md](../reviews/REVIEW-FABLE.md) Part II; THEORY.md open question on
 encoding Ousterhout's module model; the "kernel as governor" framing
 **Companion docs:** [hierarchical materialization](./2026-06-09-hierarchical-materialization-and-importance-ranking.md),
 [ontology & entity resolution](./2026-06-09-ontology-and-entity-resolution.md)

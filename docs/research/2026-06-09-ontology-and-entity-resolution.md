@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-09
 **Status:** Research notes — input to future ADRs (not a decision)
-**Origin:** [REVIEW-FABLE.md](../../REVIEW-FABLE.md) Part I, priorities 5 and 6; THEORY.md
+**Origin:** [REVIEW-FABLE.md](../reviews/REVIEW-FABLE.md) Part I, priorities 5 and 6; THEORY.md
 open question 1 (cross-project entity merging); ADR-0017/0024/0025 follow-ups
 **Companion docs:** [hierarchical materialization](./2026-06-09-hierarchical-materialization-and-importance-ranking.md),
 [design signals / normative layer](./2026-06-09-design-signals-normative-layer.md)
