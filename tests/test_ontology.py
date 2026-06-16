@@ -60,6 +60,20 @@ def test_load_returns_none_on_malformed_yaml(tmp_path: Path):
     assert load_ontology(tmp_path) is None
 
 
+def test_load_returns_none_on_non_utf8_bytes(tmp_path: Path):
+    # never-fail floor: a non-UTF-8 ontology file must default, not raise.
+    (tmp_path / "ontology.yaml").write_bytes(b"\xff\xfe nodes:")
+    assert load_ontology(tmp_path) is None
+
+
+def test_load_defaults_version_when_non_numeric(tmp_path: Path):
+    # never-fail floor: a non-numeric version must default to 1, not raise.
+    _write(tmp_path, "version: not-a-number\nnodes:\n  - {kind: module, family: structural, definition: A source file.}\n")
+    ont = load_ontology(tmp_path)
+    assert ont is not None
+    assert ont.version == 1
+
+
 def test_load_returns_none_when_no_kinds(tmp_path: Path):
     _write(tmp_path, "version: 1\npolicy: {authority_default: 0.3}\n")
     assert load_ontology(tmp_path) is None

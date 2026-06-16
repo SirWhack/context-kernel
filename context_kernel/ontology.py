@@ -186,8 +186,8 @@ def _concept_from(key: str, raw: dict, source_path: str | None) -> Concept | Non
 def _parse(raw_bytes: bytes, *, source_path: str | None) -> Ontology | None:
     try:
         data = yaml.safe_load(raw_bytes.decode("utf-8")) or {}
-    except yaml.YAMLError:
-        log.warning("ontology at %s is not valid YAML; falling back to defaults", source_path)
+    except (yaml.YAMLError, UnicodeDecodeError):
+        log.warning("ontology at %s is not valid UTF-8 YAML; falling back to defaults", source_path)
         return None
     if not isinstance(data, dict):
         return None
@@ -215,8 +215,14 @@ def _parse(raw_bytes: bytes, *, source_path: str | None) -> Ontology | None:
     if not nodes and not edges and not concepts:
         return None
 
+    try:
+        version = int(data.get("version", 1))
+    except (TypeError, ValueError):
+        log.warning("ontology at %s has a non-numeric version; defaulting to 1", source_path)
+        version = 1
+
     return Ontology(
-        version=int(data.get("version", 1)),
+        version=version,
         nodes=nodes,
         edges=edges,
         content_hash=hashlib.sha256(raw_bytes).hexdigest(),
